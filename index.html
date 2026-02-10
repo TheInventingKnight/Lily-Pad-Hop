@@ -1,10 +1,23 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Lily Pad Hop - Cloud Edition</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Lily Pad Hop</title>
     <style>
-        body { margin: 0; padding: 0; background-color: #001100; overflow: hidden; }
-        #ruffle-container { width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #001100;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+        #ruffle-container {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -12,8 +25,10 @@
 
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
-        // PASTE YOUR GOOGLE SCRIPT URL HERE
-        const API_URL = "https://script.google.com/macros/s/AKfycbyGtM_5BxBSXVJHXKBS7l8o8zwIMIbHfOSBcrhNIo2bPnKKAs2ctObLSLh6C4x1MzPwKg";
+        // *** PASTE YOUR GOOGLE DEPLOYMENT URL HERE ***
+        const API_URL = "https://script.google.com/macros/s/AKfycbyGtM_5BxBSXVJHXKBS7l8o8zwIMIbHfOSBcrhNIo2bPnKKAs2ctObLSLh6C4x1MzPwKg/exec";
+
+        let rufflePlayerInstance = null;
 
         window.RufflePlayer = window.RufflePlayer || {};
         window.addEventListener("load", (event) => {
@@ -22,55 +37,80 @@
             const container = document.getElementById("ruffle-container");
             container.appendChild(player);
             
-            // Allow External Interface
+            rufflePlayerInstance = player;
+
             player.config = {
                 "allowScriptAccess": true,
                 "scale": "showAll", 
-                "backgroundColor": "#001100"
+                "backgroundColor": "#001100",
+                "letterbox": "on" // Ensures aspect ratio is kept
             };
 
+            // Ensure this filename matches your SWF exactly
             player.load("LilyPadHop.swf");
         });
 
+        // --- Helper to communicate with Flash ---
+        function callAS3(functionName, ...args) {
+            console.log("Attempting to call AS3:", functionName, args);
+            // Ruffle attaches the methods to the player element or its shadow DOM polyfill
+            if (rufflePlayerInstance && typeof rufflePlayerInstance[functionName] === "function") {
+                rufflePlayerInstance[functionName](...args);
+            } else {
+                // Fallback: Sometimes Ruffle exposes it on the internal embed
+                console.warn("Direct call failed, trying fallback...");
+                // Note: Ruffle usually exposes ExternalInterface callbacks directly on the player DOM node
+            }
+        }
+
         // --- Bridge Functions called by ActionScript ---
 
-        function js_login(user, pass) {
-            console.log("Logging in:", user);
-            fetch(API_URL + "?action=login&username=" + encodeURIComponent(user) + "&password=" + encodeURIComponent(pass))
+        window.js_login = function(user, pass) {
+            console.log("JS: Logging in...", user);
+            const fullUrl = API_URL + "?action=login&username=" + encodeURIComponent(user) + "&password=" + encodeURIComponent(pass);
+            
+            fetch(fullUrl)
             .then(response => response.json())
             .then(data => {
-                // Call back into Flash
-                document.querySelector("ruffle-player").childNodes[0].as_onLoginResult(data.result, data.message || "", Number(data.points));
+                console.log("JS: Login Result:", data);
+                // Send result back to Flash
+                // We use setTimeout to ensure the Flash VM isn't busy
+                setTimeout(() => {
+                    callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points));
+                }, 10);
             })
             .catch(error => {
-                document.querySelector("ruffle-player").childNodes[0].as_onLoginResult("error", "Connection Failed", 0);
+                console.error("JS: Fetch Error", error);
+                callAS3("as_onLoginResult", "error", "Network Error: " + error.message, 0);
             });
         }
 
-        function js_saveScore(user, pass, points) {
-            console.log("Saving score:", points);
-            // Must use POST for updates usually, but GET is easier for simple Apps Script setups
-            fetch(API_URL + "?action=saveScore&username=" + encodeURIComponent(user) + "&password=" + encodeURIComponent(pass) + "&points=" + points)
+        window.js_saveScore = function(user, pass, points) {
+            console.log("JS: Saving score...", points);
+            const fullUrl = API_URL + "?action=saveScore&username=" + encodeURIComponent(user) + "&password=" + encodeURIComponent(pass) + "&points=" + points;
+            
+            fetch(fullUrl)
             .then(response => response.json())
-            .then(data => {
-                console.log("Score Saved", data);
-            });
+            .then(data => console.log("JS: Save Result:", data));
         }
 
-        function js_getLeaderboard() {
-            console.log("Fetching Leaderboard");
+        window.js_getLeaderboard = function() {
+            console.log("JS: Fetching Leaderboard...");
             fetch(API_URL + "?action=getLeaderboard")
             .then(response => response.json())
             .then(data => {
-                // Convert array to a specific string format for AS3 to parse easily: "Name:Score|Name:Score"
+                console.log("JS: Leaderboard Data:", data);
                 let lbString = "";
-                if(data.leaderboard) {
+                if(data.leaderboard && Array.isArray(data.leaderboard)) {
                     lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
                 }
-                document.querySelector("ruffle-player").childNodes[0].as_onLeaderboardResult(lbString);
+                setTimeout(() => {
+                    callAS3("as_onLeaderboardResult", lbString);
+                }, 10);
             })
             .catch(error => {
-                document.querySelector("ruffle-player").childNodes[0].as_onLeaderboardResult("Error Loading Data");
+                console.error("JS: Leaderboard Error", error);
+                callAS3("as_onLeaderboardResult", "Error Loading Data");
             });
         }
 
