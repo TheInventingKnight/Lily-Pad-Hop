@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Lily Pad Hop - Cloud Edition</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #001100; overflow: hidden; }
+        #ruffle-container { width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+    </style>
+</head>
+<body>
+    <div id="ruffle-container"></div>
+
+    <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
+    <script>
+        // PASTE YOUR GOOGLE SCRIPT URL HERE
+        const API_URL = "https://script.google.com/macros/s/AKfycbzwocSdecGVzynTkFmkTn26p-vPX_tDzg3aXmtM1h0-oq9tliAgU1SmOvpXKJC7wesnFA/exec";
+
+        window.RufflePlayer = window.RufflePlayer || {};
+        window.addEventListener("load", (event) => {
+            const ruffle = window.RufflePlayer.newest();
+            const player = ruffle.createPlayer();
+            const container = document.getElementById("ruffle-container");
+            container.appendChild(player);
+            
+            // Allow External Interface
+            player.config = {
+                "allowScriptAccess": true,
+                "scale": "showAll", 
+                "backgroundColor": "#001100"
+            };
+
+            player.load("LilyPadHop.swf");
+        });
+
+        // --- Bridge Functions called by ActionScript ---
+
+        function js_login(user, pass) {
+            console.log("Logging in:", user);
+            fetch(API_URL + "?action=login&username=" + encodeURIComponent(user) + "&password=" + encodeURIComponent(pass))
+            .then(response => response.json())
+            .then(data => {
+                // Call back into Flash
+                document.querySelector("ruffle-player").childNodes[0].as_onLoginResult(data.result, data.message || "", Number(data.points));
+            })
+            .catch(error => {
+                document.querySelector("ruffle-player").childNodes[0].as_onLoginResult("error", "Connection Failed", 0);
+            });
+        }
+
+        function js_saveScore(user, pass, points) {
+            console.log("Saving score:", points);
+            // Must use POST for updates usually, but GET is easier for simple Apps Script setups
+            fetch(API_URL + "?action=saveScore&username=" + encodeURIComponent(user) + "&password=" + encodeURIComponent(pass) + "&points=" + points)
+            .then(response => response.json())
+            .then(data => {
+                console.log("Score Saved", data);
+            });
+        }
+
+        function js_getLeaderboard() {
+            console.log("Fetching Leaderboard");
+            fetch(API_URL + "?action=getLeaderboard")
+            .then(response => response.json())
+            .then(data => {
+                // Convert array to a specific string format for AS3 to parse easily: "Name:Score|Name:Score"
+                let lbString = "";
+                if(data.leaderboard) {
+                    lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
+                }
+                document.querySelector("ruffle-player").childNodes[0].as_onLeaderboardResult(lbString);
+            })
+            .catch(error => {
+                document.querySelector("ruffle-player").childNodes[0].as_onLeaderboardResult("Error Loading Data");
+            });
+        }
+
+    </script>
+</body>
+</html>
