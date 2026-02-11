@@ -5,16 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Lily Pad Hop</title>
     <style>
-        /* Strict CSS Reset for Fullscreen */
         html, body {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
             background-color: #001100;
-            overflow: hidden; /* No scrollbars */
+            overflow: hidden;
         }
-        
         #ruffle-container {
             width: 100%;
             height: 100%;
@@ -22,8 +20,6 @@
             justify-content: center;
             align-items: center;
         }
-
-        /* Force Ruffle Player element to fill container */
         ruffle-player {
             width: 100% !important;
             height: 100% !important;
@@ -36,8 +32,8 @@
 
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
-        // *** PASTE NEW WEB APP URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbzbZUsZVdX0DvwrsykCc8qg6dc1Af8m9t_p14mgWaTHzSHGAbzCacp8z7kHGUNYX9HxNA/exec";
+        // *** PASTE YOUR NEW GOOGLE SCRIPT URL HERE ***
+        const API_URL = "https://script.google.com/macros/s/AKfycbxEt4mj9JKetMjSItbUfMzl6KEL00t1N9tZtdm0eEcbYSfXeUZWKmWFSyuEbobmz3crFg/exec";
 
         let rufflePlayerInstance = null;
 
@@ -62,60 +58,92 @@
             player.load("LilyPadHop.swf");
         });
 
-        // Bridge to send data back to Flash
+        // --- JSONP HELPER FUNCTION (The Magic) ---
+        // This creates a <script> tag, loads data from Google, and cleans up.
+        function jsonpRequest(url, params, callbackName) {
+            // Create a unique name for this specific request if needed
+            const uniqueCallback = callbackName + "_" + Date.now();
+            
+            // Build the URL with data
+            let src = API_URL + "?callback=" + uniqueCallback;
+            for (let key in params) {
+                src += "&" + key + "=" + encodeURIComponent(params[key]);
+            }
+
+            console.log("JSONP Request:", src);
+
+            // Create the script tag
+            const script = document.createElement('script');
+            script.src = src;
+            script.onerror = function() {
+                console.error("JSONP Error loading script");
+                // Attempt to notify Flash of error
+                if (callbackName === "handleLogin") {
+                    callAS3("as_onLoginResult", "error", "Connection Error", 0);
+                } else if (callbackName === "handleLeaderboard") {
+                    callAS3("as_onLeaderboardResult", "Error Loading Data");
+                }
+                document.body.removeChild(script);
+                delete window[uniqueCallback];
+            };
+
+            document.body.appendChild(script);
+            return uniqueCallback;
+        }
+
+        // --- Bridge to Flash ---
         function callAS3(func, ...args) {
             if (rufflePlayerInstance && typeof rufflePlayerInstance[func] === "function") {
                 rufflePlayerInstance[func](...args);
-            } else {
-                console.warn("Ruffle Interface Not Ready:", func);
             }
         }
 
         // --- JS Functions called by Flash ---
 
         window.js_login = function(user, pass) {
-            console.log("JS: Login requested for", user);
-            const url = API_URL + "?action=login&username=" + encodeURIComponent(user) + "&password=" + encodeURIComponent(pass);
-            
-            fetch(url)
-            .then(response => {
-                if (!response.ok) throw new Error("HTTP Status " + response.status);
-                return response.json();
-            })
-            .then(data => {
-                console.log("JS: Login Data", data);
-                // Send back to Flash
+            const cbName = jsonpRequest("", {
+                action: "login",
+                username: user,
+                password: pass
+            }, "handleLogin");
+
+            // Define the temporary function Google will call
+            window[cbName] = function(data) {
+                console.log("JSONP Login Data:", data);
                 callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points));
-            })
-            .catch(error => {
-                console.error("JS: Fetch Failed", error);
-                callAS3("as_onLoginResult", "error", "Network Error: " + error.message, 0);
-            });
+                // Cleanup
+                delete window[cbName];
+            };
         }
 
         window.js_saveScore = function(user, pass, points) {
-            const url = API_URL + "?action=saveScore&username=" + encodeURIComponent(user) + "&password=" + encodeURIComponent(pass) + "&points=" + points;
-            fetch(url).then(res => res.json()).then(data => console.log("Score Saved:", data));
+            const cbName = jsonpRequest("", {
+                action: "saveScore",
+                username: user,
+                password: pass,
+                points: points
+            }, "handleSave");
+
+            window[cbName] = function(data) {
+                console.log("Score Saved:", data);
+                delete window[cbName];
+            };
         }
 
         window.js_getLeaderboard = function() {
-            console.log("JS: Fetching Leaderboard");
-            const url = API_URL + "?action=getLeaderboard";
-            
-            fetch(url)
-            .then(response => response.json())
-            .then(data => {
+            const cbName = jsonpRequest("", {
+                action: "getLeaderboard"
+            }, "handleLeaderboard");
+
+            window[cbName] = function(data) {
+                console.log("Leaderboard Data:", data);
                 let lbString = "";
                 if(data.leaderboard && Array.isArray(data.leaderboard)) {
-                    // Format: Name : Score|Name : Score
                     lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
                 }
                 callAS3("as_onLeaderboardResult", lbString);
-            })
-            .catch(error => {
-                console.error("JS: Leaderboard Failed", error);
-                callAS3("as_onLeaderboardResult", "Error Loading Data");
-            });
+                delete window[cbName];
+            };
         }
 
     </script>
