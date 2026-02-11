@@ -5,14 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Lily Pad Hop</title>
     <style>
+        /* Strict Fullscreen Reset */
         html, body {
             margin: 0;
             padding: 0;
             width: 100%;
             height: 100%;
             background-color: #001100;
-            overflow: hidden;
+            overflow: hidden; /* Removes scrollbars */
         }
+        
         #ruffle-container {
             width: 100%;
             height: 100%;
@@ -20,6 +22,8 @@
             justify-content: center;
             align-items: center;
         }
+
+        /* Force Ruffle to fill the container */
         ruffle-player {
             width: 100% !important;
             height: 100% !important;
@@ -32,8 +36,8 @@
 
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
-        // *** PASTE YOUR NEW GOOGLE SCRIPT URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbxFTaWQ7qlMG87Neo9fv3zEtv-gkQI0dodQG_FVRp5NmxhUxq5EETrhMGdr06ege3QooQ/exec";
+        // *** PASTE YOUR GOOGLE SCRIPT DEPLOYMENT URL HERE ***
+        const API_URL = "https://script.google.com/macros/s/AKfycbz2fQisrszOGXzLYCD-YtNRr0oIPwnLVj6d7h0osBlpIHfjV8nU03msA65nB2vWmB3jmA/exec";
 
         let rufflePlayerInstance = null;
 
@@ -50,7 +54,7 @@
                 "allowScriptAccess": true,
                 "scale": "showAll", 
                 "backgroundColor": "#001100",
-                "letterbox": "on",
+                "letterbox": "on", // Keeps aspect ratio correct
                 "autoplay": "on",
                 "unmuteOverlay": "hidden"
             };
@@ -58,30 +62,28 @@
             player.load("LilyPadHop.swf");
         });
 
-        // --- BRIDGE TO FLASH ---
+        // --- Helper to talk to Flash ---
         function callAS3(func, ...args) {
             if (rufflePlayerInstance && typeof rufflePlayerInstance[func] === "function") {
                 rufflePlayerInstance[func](...args);
-            } else {
-                console.warn("Ruffle Interface Not Ready for", func);
             }
         }
 
-        // --- FETCH HELPER (TEXT MODE) ---
+        // --- FETCH HELPER ---
+        // This handles the communication with Google Scripts
         function sendRequest(params, successCallback, errorCallback) {
             let url = API_URL + "?";
             for (let key in params) {
                 url += key + "=" + encodeURIComponent(params[key]) + "&";
             }
-            // Add a cache buster
-            url += "t=" + Date.now();
+            url += "t=" + Date.now(); // Cache buster
 
             console.log("Fetching:", url);
 
-            fetch(url, { method: "GET" })
+            fetch(url)
             .then(response => {
-                // We accept the response even if headers are weird, provided we get text
-                return response.text(); 
+                // We convert to text first to avoid strict JSON content-type checks
+                return response.text();
             })
             .then(text => {
                 console.log("Raw Response:", text);
@@ -89,8 +91,8 @@
                     const json = JSON.parse(text);
                     successCallback(json);
                 } catch (e) {
-                    console.error("JSON Parse Error:", e);
-                    if (errorCallback) errorCallback("Invalid Data Format");
+                    console.error("JSON Error:", e);
+                    if (errorCallback) errorCallback("Data Error");
                 }
             })
             .catch(error => {
@@ -99,35 +101,42 @@
             });
         }
 
-        // --- API FUNCTIONS ---
+        // --- FUNCTIONS CALLED BY FLASH (ExternalInterface) ---
 
         window.js_login = function(user, pass) {
+            console.log("JS: Logging in...");
             sendRequest({
                 action: "login",
                 username: user,
                 password: pass
             }, function(data) {
+                // Success Callback
                 callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points));
             }, function(err) {
+                // Error Callback
                 callAS3("as_onLoginResult", "error", err, 0);
             });
         }
 
         window.js_saveScore = function(user, pass, points) {
+            console.log("JS: Saving Score...");
             sendRequest({
                 action: "saveScore",
                 username: user,
                 password: pass,
                 points: points
             }, function(data) {
-                console.log("Score Saved");
+                console.log("Score Saved:", data);
             });
         }
 
         window.js_getLeaderboard = function() {
+            console.log("JS: Fetching Leaderboard...");
             sendRequest({
                 action: "getLeaderboard"
             }, function(data) {
+                // Format the leaderboard array into a string for Flash
+                // Format: "User : 100|User2 : 90"
                 let lbString = "";
                 if(data.leaderboard && Array.isArray(data.leaderboard)) {
                     lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
