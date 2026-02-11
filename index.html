@@ -25,15 +25,6 @@
             height: 100% !important;
             display: block;
         }
-        /* Hide the tunnel iframes completely */
-        iframe.tunnel {
-            position: absolute;
-            width: 1px;
-            height: 1px;
-            top: -100px;
-            left: -100px;
-            visibility: hidden;
-        }
     </style>
 </head>
 <body>
@@ -42,10 +33,9 @@
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
         // *** PASTE YOUR NEW GOOGLE SCRIPT URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbxqYcSQl5Jq0C_k7Wbv3LeK_mw_iV6KklEQWjTT29DtntPR64OCe2qPSM2piwi2es3H-Q/exec";
+        const API_URL = "https://script.google.com/macros/s/AKfycby9gt6fcvaZIE08R_z0ZzQXsgdiP1N2SXBp2wqbh-5pRFGR4q3pReS4TbwlEeatO5LyAw/exec";
 
         let rufflePlayerInstance = null;
-        const pendingCallbacks = {};
 
         window.RufflePlayer = window.RufflePlayer || {};
         window.addEventListener("load", (event) => {
@@ -68,98 +58,74 @@
             player.load("LilyPadHop.swf");
         });
 
-        // --- MESSAGE LISTENER ---
-        window.addEventListener("message", function(event) {
-            // Filter for our specific message type
-            if (event.data && event.data.type === 'GAS_RESPONSE') {
-                const cbName = event.data.callback;
-                const responseData = event.data.data;
-                
-                console.log("Data Received:", cbName, responseData);
-
-                if (pendingCallbacks[cbName]) {
-                    // Stop the timeout timer
-                    clearTimeout(pendingCallbacks[cbName].timer);
-                    
-                    // Run the callback
-                    pendingCallbacks[cbName].fn(responseData);
-                    
-                    // Cleanup
-                    delete pendingCallbacks[cbName];
-                    const frame = document.getElementById("frame_" + cbName);
-                    if (frame) document.body.removeChild(frame);
-                }
-            }
-        });
-
-        // --- IFRAME TUNNEL ---
-        function sendTunnelRequest(params, callbackHandler, timeoutCallback) {
-            const uniqueId = "req_" + Date.now() + "_" + Math.floor(Math.random() * 10000);
-            
-            // Set a 15-second timeout to prevent "Connecting..." forever
-            const timer = setTimeout(function() {
-                console.error("Request Timeout:", uniqueId);
-                if (pendingCallbacks[uniqueId]) {
-                    timeoutCallback();
-                    delete pendingCallbacks[uniqueId];
-                    const frame = document.getElementById("frame_" + uniqueId);
-                    if (frame) document.body.removeChild(frame);
-                }
-            }, 15000);
-
-            pendingCallbacks[uniqueId] = { fn: callbackHandler, timer: timer };
-
-            // Construct URL
-            let src = API_URL + "?callback=" + uniqueId;
-            for (let key in params) {
-                src += "&" + key + "=" + encodeURIComponent(params[key]);
-            }
-
-            // Create iframe
-            const iframe = document.createElement('iframe');
-            iframe.className = 'tunnel';
-            iframe.id = "frame_" + uniqueId;
-            iframe.src = src;
-            document.body.appendChild(iframe);
-            
-            console.log("Sending Request:", uniqueId);
-        }
-
+        // --- BRIDGE TO FLASH ---
         function callAS3(func, ...args) {
             if (rufflePlayerInstance && typeof rufflePlayerInstance[func] === "function") {
                 rufflePlayerInstance[func](...args);
+            } else {
+                console.warn("Ruffle Interface Not Ready for", func);
             }
+        }
+
+        // --- FETCH HELPER (TEXT MODE) ---
+        function sendRequest(params, successCallback, errorCallback) {
+            let url = API_URL + "?";
+            for (let key in params) {
+                url += key + "=" + encodeURIComponent(params[key]) + "&";
+            }
+            // Add a cache buster
+            url += "t=" + Date.now();
+
+            console.log("Fetching:", url);
+
+            fetch(url, { method: "GET" })
+            .then(response => {
+                // We accept the response even if headers are weird, provided we get text
+                return response.text(); 
+            })
+            .then(text => {
+                console.log("Raw Response:", text);
+                try {
+                    const json = JSON.parse(text);
+                    successCallback(json);
+                } catch (e) {
+                    console.error("JSON Parse Error:", e);
+                    if (errorCallback) errorCallback("Invalid Data Format");
+                }
+            })
+            .catch(error => {
+                console.error("Network Error:", error);
+                if (errorCallback) errorCallback("Network Error");
+            });
         }
 
         // --- API FUNCTIONS ---
 
         window.js_login = function(user, pass) {
-            sendTunnelRequest({
+            sendRequest({
                 action: "login",
                 username: user,
                 password: pass
             }, function(data) {
                 callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points));
-            }, function() {
-                callAS3("as_onLoginResult", "error", "Connection Timeout", 0);
+            }, function(err) {
+                callAS3("as_onLoginResult", "error", err, 0);
             });
         }
 
         window.js_saveScore = function(user, pass, points) {
-            sendTunnelRequest({
+            sendRequest({
                 action: "saveScore",
                 username: user,
                 password: pass,
                 points: points
             }, function(data) {
                 console.log("Score Saved");
-            }, function() {
-                console.warn("Score Save Timeout");
             });
         }
 
         window.js_getLeaderboard = function() {
-            sendTunnelRequest({
+            sendRequest({
                 action: "getLeaderboard"
             }, function(data) {
                 let lbString = "";
@@ -167,8 +133,8 @@
                     lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
                 }
                 callAS3("as_onLeaderboardResult", lbString);
-            }, function() {
-                callAS3("as_onLeaderboardResult", "Error: Timeout");
+            }, function(err) {
+                callAS3("as_onLeaderboardResult", "Error: " + err);
             });
         }
 
