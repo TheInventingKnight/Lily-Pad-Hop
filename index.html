@@ -33,9 +33,11 @@
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
         // *** PASTE YOUR NEW GOOGLE SCRIPT URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbzZ7czmUW8mhaQEijnJfwFmzzMz6FACnvDdihBB4ssaC34okJK179yxdnpUcrFEdNXOeQ/exec";
+        const API_URL = "https://script.google.com/macros/s/AKfycbyCcqDw2TQDvA7NLrqPKVdcGSVKQB43tZw_M-ol-ObE3WSFDdEutazMkMEZVyGmRJbKjA/exec";
 
         let rufflePlayerInstance = null;
+        // Storage for pending requests
+        const pendingCallbacks = {};
 
         window.RufflePlayer = window.RufflePlayer || {};
         window.addEventListener("load", (event) => {
@@ -58,92 +60,92 @@
             player.load("LilyPadHop.swf");
         });
 
-        // --- JSONP HELPER FUNCTION (The Magic) ---
-        // This creates a <script> tag, loads data from Google, and cleans up.
-        function jsonpRequest(url, params, callbackName) {
-            // Create a unique name for this specific request if needed
-            const uniqueCallback = callbackName + "_" + Date.now();
+        // --- IFRAME TUNNEL LISTENER ---
+        // This listens for the "shout" from the invisible iframe
+        window.addEventListener("message", function(event) {
+            // We expect data object with { type: 'GAS_RESPONSE', callback: '...', data: ... }
+            if (event.data && event.data.type === 'GAS_RESPONSE') {
+                const cbName = event.data.callback;
+                const responseData = event.data.data;
+                
+                console.log("Tunnel Received:", cbName, responseData);
+
+                // Execute the stored function for this specific request
+                if (pendingCallbacks[cbName]) {
+                    pendingCallbacks[cbName](responseData);
+                    
+                    // Cleanup
+                    delete pendingCallbacks[cbName];
+                    const frame = document.getElementById("frame_" + cbName);
+                    if (frame) document.body.removeChild(frame);
+                }
+            }
+        });
+
+        // --- HELPER: SPAWN IFRAME ---
+        function sendTunnelRequest(params, callbackHandler) {
+            const uniqueId = "req_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
             
-            // Build the URL with data
-            let src = API_URL + "?callback=" + uniqueCallback;
+            // Store the handler
+            pendingCallbacks[uniqueId] = callbackHandler;
+
+            // Build URL
+            let src = API_URL + "?callback=" + uniqueId;
             for (let key in params) {
                 src += "&" + key + "=" + encodeURIComponent(params[key]);
             }
 
-            console.log("JSONP Request:", src);
-
-            // Create the script tag
-            const script = document.createElement('script');
-            script.src = src;
-            script.onerror = function() {
-                console.error("JSONP Error loading script");
-                // Attempt to notify Flash of error
-                if (callbackName === "handleLogin") {
-                    callAS3("as_onLoginResult", "error", "Connection Error", 0);
-                } else if (callbackName === "handleLeaderboard") {
-                    callAS3("as_onLeaderboardResult", "Error Loading Data");
-                }
-                document.body.removeChild(script);
-                delete window[uniqueCallback];
-            };
-
-            document.head.appendChild(script);
-            return uniqueCallback;
+            // Create invisible iframe
+            const iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            iframe.id = "frame_" + uniqueId;
+            iframe.src = src;
+            document.body.appendChild(iframe);
+            
+            console.log("Tunnel Sent:", src);
         }
 
-        // --- Bridge to Flash ---
+        // --- BRIDGE TO FLASH ---
         function callAS3(func, ...args) {
             if (rufflePlayerInstance && typeof rufflePlayerInstance[func] === "function") {
                 rufflePlayerInstance[func](...args);
             }
         }
 
-        // --- JS Functions called by Flash ---
+        // --- FUNCTIONS CALLED BY ACTION SCRIPT ---
 
         window.js_login = function(user, pass) {
-            const cbName = jsonpRequest("", {
+            sendTunnelRequest({
                 action: "login",
                 username: user,
                 password: pass
-            }, "handleLogin");
-
-            // Define the temporary function Google will call
-            window[cbName] = function(data) {
-                console.log("JSONP Login Data:", data);
+            }, function(data) {
+                // This runs when Google replies
                 callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points));
-                // Cleanup
-                delete window[cbName];
-            };
+            });
         }
 
         window.js_saveScore = function(user, pass, points) {
-            const cbName = jsonpRequest("", {
+            sendTunnelRequest({
                 action: "saveScore",
                 username: user,
                 password: pass,
                 points: points
-            }, "handleSave");
-
-            window[cbName] = function(data) {
-                console.log("Score Saved:", data);
-                delete window[cbName];
-            };
+            }, function(data) {
+                console.log("Score Save Confirmed:", data);
+            });
         }
 
         window.js_getLeaderboard = function() {
-            const cbName = jsonpRequest("", {
+            sendTunnelRequest({
                 action: "getLeaderboard"
-            }, "handleLeaderboard");
-
-            window[cbName] = function(data) {
-                console.log("Leaderboard Data:", data);
+            }, function(data) {
                 let lbString = "";
                 if(data.leaderboard && Array.isArray(data.leaderboard)) {
                     lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
                 }
                 callAS3("as_onLeaderboardResult", lbString);
-                delete window[cbName];
-            };
+            });
         }
 
     </script>
