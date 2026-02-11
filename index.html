@@ -25,6 +25,15 @@
             height: 100% !important;
             display: block;
         }
+        /* Hide the tunnel iframes completely */
+        iframe.tunnel {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            top: -100px;
+            left: -100px;
+            visibility: hidden;
+        }
     </style>
 </head>
 <body>
@@ -33,10 +42,9 @@
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
         // *** PASTE YOUR NEW GOOGLE SCRIPT URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbyCcqDw2TQDvA7NLrqPKVdcGSVKQB43tZw_M-ol-ObE3WSFDdEutazMkMEZVyGmRJbKjA/exec";
+        const API_URL = "https://script.google.com/macros/s/AKfycbxqYcSQl5Jq0C_k7Wbv3LeK_mw_iV6KklEQWjTT29DtntPR64OCe2qPSM2piwi2es3H-Q/exec";
 
         let rufflePlayerInstance = null;
-        // Storage for pending requests
         const pendingCallbacks = {};
 
         window.RufflePlayer = window.RufflePlayer || {};
@@ -60,19 +68,21 @@
             player.load("LilyPadHop.swf");
         });
 
-        // --- IFRAME TUNNEL LISTENER ---
-        // This listens for the "shout" from the invisible iframe
+        // --- MESSAGE LISTENER ---
         window.addEventListener("message", function(event) {
-            // We expect data object with { type: 'GAS_RESPONSE', callback: '...', data: ... }
+            // Filter for our specific message type
             if (event.data && event.data.type === 'GAS_RESPONSE') {
                 const cbName = event.data.callback;
                 const responseData = event.data.data;
                 
-                console.log("Tunnel Received:", cbName, responseData);
+                console.log("Data Received:", cbName, responseData);
 
-                // Execute the stored function for this specific request
                 if (pendingCallbacks[cbName]) {
-                    pendingCallbacks[cbName](responseData);
+                    // Stop the timeout timer
+                    clearTimeout(pendingCallbacks[cbName].timer);
+                    
+                    // Run the callback
+                    pendingCallbacks[cbName].fn(responseData);
                     
                     // Cleanup
                     delete pendingCallbacks[cbName];
@@ -82,37 +92,46 @@
             }
         });
 
-        // --- HELPER: SPAWN IFRAME ---
-        function sendTunnelRequest(params, callbackHandler) {
-            const uniqueId = "req_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+        // --- IFRAME TUNNEL ---
+        function sendTunnelRequest(params, callbackHandler, timeoutCallback) {
+            const uniqueId = "req_" + Date.now() + "_" + Math.floor(Math.random() * 10000);
             
-            // Store the handler
-            pendingCallbacks[uniqueId] = callbackHandler;
+            // Set a 15-second timeout to prevent "Connecting..." forever
+            const timer = setTimeout(function() {
+                console.error("Request Timeout:", uniqueId);
+                if (pendingCallbacks[uniqueId]) {
+                    timeoutCallback();
+                    delete pendingCallbacks[uniqueId];
+                    const frame = document.getElementById("frame_" + uniqueId);
+                    if (frame) document.body.removeChild(frame);
+                }
+            }, 15000);
 
-            // Build URL
+            pendingCallbacks[uniqueId] = { fn: callbackHandler, timer: timer };
+
+            // Construct URL
             let src = API_URL + "?callback=" + uniqueId;
             for (let key in params) {
                 src += "&" + key + "=" + encodeURIComponent(params[key]);
             }
 
-            // Create invisible iframe
+            // Create iframe
             const iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
+            iframe.className = 'tunnel';
             iframe.id = "frame_" + uniqueId;
             iframe.src = src;
             document.body.appendChild(iframe);
             
-            console.log("Tunnel Sent:", src);
+            console.log("Sending Request:", uniqueId);
         }
 
-        // --- BRIDGE TO FLASH ---
         function callAS3(func, ...args) {
             if (rufflePlayerInstance && typeof rufflePlayerInstance[func] === "function") {
                 rufflePlayerInstance[func](...args);
             }
         }
 
-        // --- FUNCTIONS CALLED BY ACTION SCRIPT ---
+        // --- API FUNCTIONS ---
 
         window.js_login = function(user, pass) {
             sendTunnelRequest({
@@ -120,8 +139,9 @@
                 username: user,
                 password: pass
             }, function(data) {
-                // This runs when Google replies
                 callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points));
+            }, function() {
+                callAS3("as_onLoginResult", "error", "Connection Timeout", 0);
             });
         }
 
@@ -132,7 +152,9 @@
                 password: pass,
                 points: points
             }, function(data) {
-                console.log("Score Save Confirmed:", data);
+                console.log("Score Saved");
+            }, function() {
+                console.warn("Score Save Timeout");
             });
         }
 
@@ -145,6 +167,8 @@
                     lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
                 }
                 callAS3("as_onLeaderboardResult", lbString);
+            }, function() {
+                callAS3("as_onLeaderboardResult", "Error: Timeout");
             });
         }
 
