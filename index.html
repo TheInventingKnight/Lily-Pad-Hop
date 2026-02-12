@@ -37,7 +37,7 @@
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
         // *** PASTE YOUR GOOGLE SCRIPT DEPLOYMENT URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbz2fQisrszOGXzLYCD-YtNRr0oIPwnLVj6d7h0osBlpIHfjV8nU03msA65nB2vWmB3jmA/exec";
+        const API_URL = "https://script.google.com/macros/s/AKfycbxqt6q7zKP-ODgkj9DV-NVGTffsv-3ps2JXSGSBQU93JMli5WuX5jHywNxKl_Uy9kwJrw/exec";
 
         let rufflePlayerInstance = null;
 
@@ -70,7 +70,6 @@
         }
 
         // --- FETCH HELPER ---
-        // This handles the communication with Google Scripts
         function sendRequest(params, successCallback, errorCallback) {
             let url = API_URL + "?";
             for (let key in params) {
@@ -82,11 +81,9 @@
 
             fetch(url)
             .then(response => {
-                // We convert to text first to avoid strict JSON content-type checks
                 return response.text();
             })
             .then(text => {
-                console.log("Raw Response:", text);
                 try {
                     const json = JSON.parse(text);
                     successCallback(json);
@@ -111,10 +108,11 @@
                 password: pass
             }, function(data) {
                 // Success Callback
-                callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points));
+                // IMPORTANT: We now pass data.xmlData (the level progress) back to Flash
+                callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points), data.xmlData || "");
             }, function(err) {
                 // Error Callback
-                callAS3("as_onLoginResult", "error", err, 0);
+                callAS3("as_onLoginResult", "error", err, 0, "");
             });
         }
 
@@ -129,14 +127,25 @@
                 console.log("Score Saved:", data);
             });
         }
+        
+        // NEW FUNCTION: Handles the big XML blob for level progress
+        window.js_saveCloudData = function(user, pass, xmlData) {
+            console.log("JS: Saving Cloud XML Data...");
+            sendRequest({
+                action: "saveCloudData",
+                username: user,
+                password: pass,
+                xmlData: xmlData
+            }, function(data) {
+                console.log("Cloud Data Saved:", data);
+            });
+        }
 
         window.js_getLeaderboard = function() {
             console.log("JS: Fetching Leaderboard...");
             sendRequest({
                 action: "getLeaderboard"
             }, function(data) {
-                // Format the leaderboard array into a string for Flash
-                // Format: "User : 100|User2 : 90"
                 let lbString = "";
                 if(data.leaderboard && Array.isArray(data.leaderboard)) {
                     lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
