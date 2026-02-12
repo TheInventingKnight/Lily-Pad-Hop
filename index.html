@@ -37,7 +37,7 @@
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
         // *** PASTE YOUR GOOGLE SCRIPT DEPLOYMENT URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbxqt6q7zKP-ODgkj9DV-NVGTffsv-3ps2JXSGSBQU93JMli5WuX5jHywNxKl_Uy9kwJrw/exec";
+        const API_URL = "https://script.google.com/macros/s/AKfycbzcByYoRpz2c7fNuKKMwuGrkk7ewAFAjtYFDpckGsjt37s6X00ecWTkoXqTQIvLom3MNQ/exec";
 
         let rufflePlayerInstance = null;
 
@@ -107,8 +107,7 @@
                 username: user,
                 password: pass
             }, function(data) {
-                // Success Callback
-                // IMPORTANT: We now pass data.xmlData (the level progress) back to Flash
+                // Success Callback - PASS XML DATA BACK TO FLASH
                 callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points), data.xmlData || "");
             }, function(err) {
                 // Error Callback
@@ -128,7 +127,7 @@
             });
         }
         
-        // NEW FUNCTION: Handles the big XML blob for level progress
+        // --- THIS IS THE MISSING FUNCTION THAT FIXES SAVING ---
         window.js_saveCloudData = function(user, pass, xmlData) {
             console.log("JS: Saving Cloud XML Data...");
             sendRequest({
@@ -137,7 +136,7 @@
                 password: pass,
                 xmlData: xmlData
             }, function(data) {
-                console.log("Cloud Data Saved:", data);
+                console.log("Cloud Data Saved Response:", data);
             });
         }
 
