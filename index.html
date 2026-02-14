@@ -69,17 +69,28 @@
             }
         }
 
-        // --- FETCH HELPER ---
+        // --- FETCH HELPER (FIXED TO USE POST) ---
         function sendRequest(params, successCallback, errorCallback) {
-            let url = API_URL + "?";
+            // FIX: We now use POST because GET URLs have a size limit.
+            // The previous error was because the XML for 3+ verses was too long for a URL.
+            
+            const formData = new URLSearchParams();
             for (let key in params) {
-                url += key + "=" + encodeURIComponent(params[key]) + "&";
+                formData.append(key, params[key]);
             }
-            url += "t=" + Date.now(); // Cache buster
 
-            console.log("Fetching:", url);
+            // We add the cache buster to the URL, but the data goes in the body
+            let postUrl = API_URL + "?t=" + Date.now();
 
-            fetch(url)
+            console.log("Sending POST Request to:", postUrl);
+
+            fetch(postUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                body: formData.toString()
+            })
             .then(response => {
                 return response.text();
             })
@@ -107,7 +118,7 @@
                 username: user,
                 password: pass
             }, function(data) {
-                // Success Callback - PASS XML DATA BACK TO FLASH
+                // Success Callback
                 callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points), data.xmlData || "");
             }, function(err) {
                 // Error Callback
@@ -127,7 +138,6 @@
             });
         }
         
-        // --- THIS IS THE MISSING FUNCTION THAT FIXES SAVING ---
         window.js_saveCloudData = function(user, pass, xmlData) {
             console.log("JS: Saving Cloud XML Data...");
             sendRequest({
