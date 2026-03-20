@@ -54,14 +54,15 @@
                 "allowScriptAccess": true,
                 "scale": "showAll", 
                 "backgroundColor": "#001100",
-                "letterbox": "on", // Keeps aspect ratio correct
+                "letterbox": "on", 
                 "autoplay": "on",
-                "unmuteOverlay": "hidden"
+                "unmuteOverlay": "hidden",
+                "quality": "low" // <-- Add this line right here
             };
 
             player.load("LilyPadHop.swf");
         });
-
+        
         // --- Helper to talk to Flash ---
         function callAS3(func, ...args) {
             if (rufflePlayerInstance && typeof rufflePlayerInstance[func] === "function") {
