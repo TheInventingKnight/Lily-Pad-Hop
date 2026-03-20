@@ -37,7 +37,7 @@
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
     <script>
         // *** PASTE YOUR GOOGLE SCRIPT DEPLOYMENT URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbybgZoMfjM0_VYJg3KNdLifhg9GNAzCDF9XfHUGKQQAXkWSFfjgH-Ro4xLas8AUzM1TAQ/exec";
+        const API_URL = "https://script.google.com/macros/s/AKfycbwfTOtbGEvMP_F5ZVYIM7JajmBpaSZSeGCZhYVGgxL-D8AVBZ8Nr__TMfFXKs6Wdjp79Q/exec";
 
         let rufflePlayerInstance = null;
 
@@ -125,6 +125,22 @@
                 callAS3("as_onLoginResult", "error", err, 0, "");
             });
         }
+        window.js_register = function(user, pass) {
+        console.log("JS: Registering Account...");
+        sendRequest({
+            action: "register",
+            username: user,
+            password: pass
+        }, function(data) {
+            console.log("Register Result:", data);
+            // We route the successful registration back to the existing login handler 
+            // so Flash automatically logs the player in and starts the game!
+            callAS3("as_onLoginResult", data.result, data.message || "", data.points || 0, data.xmlData || "");
+        }, function(err) {
+            callAS3("as_onLoginResult", "error", err, 0, "");
+        });
+    }
+
 
         window.js_saveScore = function(user, pass, points) {
             console.log("JS: Saving Score...");
