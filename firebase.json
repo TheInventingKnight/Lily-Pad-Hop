@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "public": "Lily-Pad-Hop",
+    "public": ".",
     "ignore": [
       "firebase.json",
       "**/.*",
