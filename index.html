@@ -34,10 +34,28 @@
 <body>
     <div id="ruffle-container"></div>
 
+    <!-- Ruffle Engine -->
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
+
+    <!-- Firebase SDK Compat libraries (Drop-in replacements for simple HTML sites) -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
     <script>
-        // *** PASTE YOUR GOOGLE SCRIPT DEPLOYMENT URL HERE ***
-        const API_URL = "https://script.google.com/macros/s/AKfycbybgZoMfjM0_VYJg3KNdLifhg9GNAzCDF9XfHUGKQQAXkWSFfjgH-Ro4xLas8AUzM1TAQ/exec";
+        // *** PASTE YOUR FIREBASE CONFIG HERE ***
+        // You can find this in your Firebase Console -> Project Settings -> General -> Your Apps
+        const firebaseConfig = {
+            apiKey: "AIzaSyCMSpev_qJxhNkmyYcsyj7wWip1LWyHv_Y",
+            authDomain: "lilypadhop-59ea5.firebaseapp.com",
+            projectId: "lilypadhop-59ea5", 
+            storageBucket: "lilypadhop-59ea5.firebasestorage.app",
+            messagingSenderId: "740869273083",
+            appId: "1:740869273083:web:90cf5be99b980b580d075e"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
 
         let rufflePlayerInstance = null;
 
@@ -57,7 +75,7 @@
                 "letterbox": "on", 
                 "autoplay": "on",
                 "unmuteOverlay": "hidden",
-                "quality": "low" // <-- Add this line right here
+                "quality": "low" // Maintained your quality setting
             };
 
             player.load("LilyPadHop.swf");
@@ -70,118 +88,120 @@
             }
         }
 
-        // --- FETCH HELPER (FIXED TO USE POST) ---
-        function sendRequest(params, successCallback, errorCallback) {
-            // FIX: We now use POST because GET URLs have a size limit.
-            // The previous error was because the XML for 3+ verses was too long for a URL.
-            
-            const formData = new URLSearchParams();
-            for (let key in params) {
-                formData.append(key, params[key]);
-            }
+        // --- FIREBASE FIRESTORE INTEGRATION ---
 
-            // We add the cache buster to the URL, but the data goes in the body
-            let postUrl = API_URL + "?t=" + Date.now();
+        window.js_login = async function(user, pass) {
+            console.log("JS: Logging in via Firebase...");
+            try {
+                // Using lowercase username as the document ID so it's case insensitive
+                const docRef = db.collection("users").doc(user.toLowerCase());
+                const doc = await docRef.get();
 
-            console.log("Sending POST Request to:", postUrl);
-
-            fetch(postUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded"
-                },
-                body: formData.toString()
-            })
-            .then(response => {
-                return response.text();
-            })
-            .then(text => {
-                try {
-                    const json = JSON.parse(text);
-                    successCallback(json);
-                } catch (e) {
-                    console.error("JSON Error:", e);
-                    if (errorCallback) errorCallback("Data Error");
+                if (doc.exists) {
+                    const data = doc.data();
+                    if (data.password === pass) {
+                        callAS3("as_onLoginResult", "success", "", Number(data.points) || 0, data.xmlData || "");
+                    } else {
+                        callAS3("as_onLoginResult", "error", "Incorrect password", 0, "");
+                    }
+                } else {
+                    callAS3("as_onLoginResult", "error", "User not found. Please create an account.", 0, "");
                 }
-            })
-            .catch(error => {
-                console.error("Network Error:", error);
-                if (errorCallback) errorCallback("Network Error");
-            });
+            } catch(e) {
+                console.error("Firebase Login Error:", e);
+                callAS3("as_onLoginResult", "error", "Database connection failed.", 0, "");
+            }
         }
 
-        // --- FUNCTIONS CALLED BY FLASH (ExternalInterface) ---
+        window.js_register = async function(user, pass) {
+            console.log("JS: Registering Account via Firebase...");
+            try {
+                const docRef = db.collection("users").doc(user.toLowerCase());
+                const doc = await docRef.get();
 
-        window.js_login = function(user, pass) {
-            console.log("JS: Logging in...");
-            sendRequest({
-                action: "login",
-                username: user,
-                password: pass
-            }, function(data) {
-                // Success Callback
-                callAS3("as_onLoginResult", data.result, data.message || "", Number(data.points), data.xmlData || "");
-            }, function(err) {
-                // Error Callback
-                callAS3("as_onLoginResult", "error", err, 0, "");
-            });
+                if (doc.exists) {
+                    callAS3("as_onLoginResult", "error", "Username already exists.", 0, "");
+                } else {
+                    // Create the new user
+                    await docRef.set({
+                        username: user,
+                        password: pass,
+                        points: 0,
+                        xmlData: "",
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    // Route back to existing login handler to auto-login
+                    callAS3("as_onLoginResult", "success", "", 0, "");
+                }
+            } catch(e) {
+                console.error("Firebase Register Error:", e);
+                callAS3("as_onLoginResult", "error", "Database connection failed.", 0, "");
+            }
         }
-        window.js_register = function(user, pass) {
-        console.log("JS: Registering Account...");
-        sendRequest({
-            action: "register",
-            username: user,
-            password: pass
-        }, function(data) {
-            console.log("Register Result:", data);
-            // We route the successful registration back to the existing login handler 
-            // so Flash automatically logs the player in and starts the game!
-            callAS3("as_onLoginResult", data.result, data.message || "", data.points || 0, data.xmlData || "");
-        }, function(err) {
-            callAS3("as_onLoginResult", "error", err, 0, "");
-        });
-    }
 
-
-        window.js_saveScore = function(user, pass, points) {
-            console.log("JS: Saving Score...");
-            sendRequest({
-                action: "saveScore",
-                username: user,
-                password: pass,
-                points: points
-            }, function(data) {
-                console.log("Score Saved:", data);
-            });
+        window.js_saveScore = async function(user, pass, points) {
+            console.log("JS: Saving Score via Firebase...");
+            try {
+                const docRef = db.collection("users").doc(user.toLowerCase());
+                const doc = await docRef.get();
+                
+                if (doc.exists && doc.data().password === pass) {
+                    // Increment points safely on the server side
+                    await docRef.update({
+                        points: firebase.firestore.FieldValue.increment(Number(points)),
+                        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    console.log("Score Saved Successfully");
+                }
+            } catch(e) {
+                console.error("Firebase Save Score Error:", e);
+            }
         }
         
-        window.js_saveCloudData = function(user, pass, xmlData) {
-            console.log("JS: Saving Cloud XML Data...");
-            sendRequest({
-                action: "saveCloudData",
-                username: user,
-                password: pass,
-                xmlData: xmlData
-            }, function(data) {
-                console.log("Cloud Data Saved Response:", data);
-            });
-        }
-
-        window.js_getLeaderboard = function() {
-            console.log("JS: Fetching Leaderboard...");
-            sendRequest({
-                action: "getLeaderboard"
-            }, function(data) {
-                let lbString = "";
-                if(data.leaderboard && Array.isArray(data.leaderboard)) {
-                    lbString = data.leaderboard.map(u => u.name + " : " + u.score).join("|");
+        window.js_saveCloudData = async function(user, pass, xmlData) {
+            console.log("JS: Saving Cloud XML Data via Firebase...");
+            try {
+                const docRef = db.collection("users").doc(user.toLowerCase());
+                const doc = await docRef.get();
+                
+                if (doc.exists && doc.data().password === pass) {
+                    await docRef.update({
+                        xmlData: xmlData,
+                        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    console.log("Cloud Data Saved Successfully");
                 }
-                callAS3("as_onLeaderboardResult", lbString);
-            }, function(err) {
-                callAS3("as_onLeaderboardResult", "Error: " + err);
-            });
+            } catch(e) {
+                console.error("Firebase Save Cloud Data Error:", e);
+            }
         }
 
+        window.js_getLeaderboard = async function() {
+            console.log("JS: Fetching Leaderboard via Firebase...");
+            try {
+                // Fetch top 20 users sorted by points
+                const snapshot = await db.collection("users")
+                                         .orderBy("points", "desc")
+                                         .limit(20)
+                                         .get();
+                
+                let users = [];
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    if (data.points > 0) { // Don't show people with 0 points
+                        users.push(data.username + " : " + data.points);
+                    }
+                });
+
+                // Join them exactly how AS3 expects: "User1 : 100|User2 : 50"
+                let lbString = users.join("|");
+                callAS3("as_onLeaderboardResult", lbString);
+                
+            } catch(e) {
+                console.error("Firebase Leaderboard Error:", e);
+                callAS3("as_onLeaderboardResult", "Error: Database failed.");
+            }
+        }
     </script>
 </body>
 </html>
