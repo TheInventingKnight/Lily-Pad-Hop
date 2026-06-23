@@ -169,18 +169,61 @@
 
                         const resData = await response.json();
                         if (response.ok) {
-                            callAS3("as_onForgotPasswordResult", "success", "Recovery email sent to " + data.email);
+                            callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
                         } else {
                             callAS3("as_onForgotPasswordResult", "error", resData.error || "Email delivery failed.");
                         }
                     } else {
-                        callAS3("as_onForgotPasswordResult", "error", "No email registered for this account.");
+                        // Trigger email prompt screen for old accounts
+                        callAS3("as_onForgotPasswordResult", "need_email", user);
                     }
                 } else {
                     callAS3("as_onForgotPasswordResult", "error", "Username not found.");
                 }
             } catch(e) {
                 console.error("Firebase/Email Forgot Password Error:", e);
+                callAS3("as_onForgotPasswordResult", "error", "Connection failed. Please try again.");
+            }
+        }
+
+        window.js_registerEmailAndRecover = async function(user, email) {
+            console.log("JS: Registering email for old user & recovering:", user, "->", email);
+            try {
+                const docRef = db.collection("users").doc(user.toLowerCase());
+                const doc = await docRef.get();
+
+                if (doc.exists) {
+                    const data = doc.data();
+                    // 1. Update the email field in Firestore user doc
+                    await docRef.update({
+                        email: email,
+                        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+
+                    // 2. Send POST request to Vercel Serverless Function
+                    const response = await fetch("https://vercel-emailing.vercel.app/api/forgot-password", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            username: data.username || user,
+                            email: email,
+                            password: data.password
+                        })
+                    });
+
+                    const resData = await response.json();
+                    if (response.ok) {
+                        callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
+                    } else {
+                        callAS3("as_onForgotPasswordResult", "error", resData.error || "Email delivery failed.");
+                    }
+                } else {
+                    callAS3("as_onForgotPasswordResult", "error", "Username not found.");
+                }
+            } catch(e) {
+                console.error("Firebase Register Email and Recover Error:", e);
                 callAS3("as_onForgotPasswordResult", "error", "Connection failed. Please try again.");
             }
         }
