@@ -131,6 +131,11 @@
                         xmlData: "",
                         createdAt: firebase.firestore.FieldValue.serverTimestamp()
                     });
+                    // Create public leaderboard entry
+                    await db.collection("leaderboard").doc(user.toLowerCase()).set({
+                        username: user,
+                        points: 0
+                    });
                     // Route back to existing login handler to auto-login
                     callAS3("as_onLoginResult", "success", "", 0, "");
                 }
@@ -187,11 +192,21 @@
                 const doc = await docRef.get();
                 
                 if (doc.exists && doc.data().password === pass) {
-                    // Increment points safely on the server side
+                    const currentPoints = Number(doc.data().points) || 0;
+                    const newPoints = currentPoints + Number(points);
+
+                    // Update user doc
                     await docRef.update({
-                        points: firebase.firestore.FieldValue.increment(Number(points)),
+                        points: newPoints,
                         lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
                     });
+                    
+                    // Update leaderboard doc with absolute points
+                    await db.collection("leaderboard").doc(user.toLowerCase()).set({
+                        username: doc.data().username || user,
+                        points: newPoints
+                    }, { merge: true });
+
                     console.log("Score Saved Successfully");
                 }
             } catch(e) {
@@ -220,8 +235,8 @@
         window.js_getLeaderboard = async function() {
             console.log("JS: Fetching Leaderboard via Firebase...");
             try {
-                // Fetch top 20 users sorted by points
-                const snapshot = await db.collection("users")
+                // Fetch top 20 users sorted by points from the public leaderboard collection
+                const snapshot = await db.collection("leaderboard")
                                          .orderBy("points", "desc")
                                          .limit(20)
                                          .get();
