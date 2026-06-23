@@ -106,10 +106,8 @@
                         if (data.email) {
                             callAS3("as_onLoginResult", "success", "", Number(data.points) || 0, data.xmlData || "");
                         } else {
-                            // Old account, save login info temporarily and request email linking
-                            tempLoginPoints = Number(data.points) || 0;
-                            tempLoginXmlData = data.xmlData || "";
-                            callAS3("as_onLoginResult", "need_email_login", data.username || user);
+                            // Old account, request email linking and load their points/xmlData into Flash
+                            callAS3("as_onLoginResult", "need_email", "", Number(data.points) || 0, data.xmlData || "");
                         }
                     } else {
                         callAS3("as_onLoginResult", "error", "Incorrect password", 0, "");
