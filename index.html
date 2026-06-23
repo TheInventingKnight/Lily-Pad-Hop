@@ -90,6 +90,9 @@
 
         // --- FIREBASE FIRESTORE INTEGRATION ---
 
+        let tempLoginPoints = 0;
+        let tempLoginXmlData = "";
+
         window.js_login = async function(user, pass) {
             console.log("JS: Logging in via Firebase...");
             try {
@@ -100,7 +103,14 @@
                 if (doc.exists) {
                     const data = doc.data();
                     if (data.password === pass) {
-                        callAS3("as_onLoginResult", "success", "", Number(data.points) || 0, data.xmlData || "");
+                        if (data.email) {
+                            callAS3("as_onLoginResult", "success", "", Number(data.points) || 0, data.xmlData || "");
+                        } else {
+                            // Old account, save login info temporarily and request email linking
+                            tempLoginPoints = Number(data.points) || 0;
+                            tempLoginXmlData = data.xmlData || "";
+                            callAS3("as_onLoginResult", "need_email_login", data.username || user);
+                        }
                     } else {
                         callAS3("as_onLoginResult", "error", "Incorrect password", 0, "");
                     }
@@ -110,6 +120,117 @@
             } catch(e) {
                 console.error("Firebase Login Error:", e);
                 callAS3("as_onLoginResult", "error", "Database connection failed.", 0, "");
+            }
+        }
+
+        let verificationCode = "";
+        let verificationEmail = "";
+        let verificationUser = "";
+        let verificationPass = "";
+        let verificationContext = "";
+
+        window.js_sendVerificationCode = async function(email, username, context, password) {
+            // Generate 6-digit code
+            const code = Math.floor(100000 + Math.random() * 900000).toString();
+            verificationCode = code;
+            verificationEmail = email;
+            verificationUser = username;
+            verificationPass = password || "";
+            verificationContext = context;
+
+            console.log(`JS: Generated verification code ${code} for ${email} (${context})`);
+            try {
+                const response = await fetch("https://vercel-emailing.vercel.app/api/send-code", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        email: email,
+                        code: code,
+                        username: username
+                    })
+                });
+
+                const resData = await response.json();
+                if (response.ok) {
+                    callAS3("as_onCodeSent", "success", "");
+                } else {
+                    callAS3("as_onCodeSent", "error", resData.error || "Failed to send code.");
+                }
+            } catch(e) {
+                console.error("Verification code error:", e);
+                callAS3("as_onCodeSent", "error", "Network error.");
+            }
+        }
+
+        window.js_checkVerificationCode = async function(enteredCode) {
+            console.log("JS: Checking code:", enteredCode);
+            if (enteredCode === verificationCode) {
+                try {
+                    if (verificationContext === "register") {
+                        // Register the user
+                        const docRef = db.collection("users").doc(verificationUser.toLowerCase());
+                        await docRef.set({
+                            username: verificationUser,
+                            password: verificationPass,
+                            email: verificationEmail,
+                            points: 0,
+                            xmlData: "",
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        await db.collection("leaderboard").doc(verificationUser.toLowerCase()).set({
+                            username: verificationUser,
+                            points: 0
+                        });
+                        callAS3("as_onCodeVerified", "success_register", "");
+
+                    } else if (verificationContext === "recover") {
+                        // Save email and send recovery password
+                        const docRef = db.collection("users").doc(verificationUser.toLowerCase());
+                        const doc = await docRef.get();
+                        if (doc.exists) {
+                            const data = doc.data();
+                            await docRef.update({
+                                email: verificationEmail,
+                                lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                            });
+                            // Call forgot password mailing backend
+                            const response = await fetch("https://vercel-emailing.vercel.app/api/forgot-password", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    username: data.username || verificationUser,
+                                    email: verificationEmail,
+                                    password: data.password
+                                })
+                            });
+                            if (response.ok) {
+                                callAS3("as_onCodeVerified", "success_recover", "Recovery email successfully sent!");
+                            } else {
+                                callAS3("as_onCodeVerified", "error", "Failed to send recovery email.");
+                            }
+                        } else {
+                            callAS3("as_onCodeVerified", "error", "Username not found.");
+                        }
+
+                    } else if (verificationContext === "add_email") {
+                        // Link email for logged-in user
+                        const docRef = db.collection("users").doc(verificationUser.toLowerCase());
+                        await docRef.update({
+                            email: verificationEmail,
+                            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        // Complete login success flow inside Flash
+                        callAS3("as_onCodeVerified", "success_add_email", "");
+                        callAS3("as_onLoginResult", "success", "", tempLoginPoints, tempLoginXmlData);
+                    }
+                } catch(e) {
+                    console.error("Firestore update error inside verification:", e);
+                    callAS3("as_onCodeVerified", "error", "Database error occurred.");
+                }
+            } else {
+                callAS3("as_onCodeVerified", "error", "Invalid verification code.");
             }
         }
 
