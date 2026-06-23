@@ -113,7 +113,7 @@
             }
         }
 
-        window.js_register = async function(user, pass, email) {
+        window.js_register = async function(user, pass) {
             console.log("JS: Registering Account via Firebase...");
             try {
                 const docRef = db.collection("users").doc(user.toLowerCase());
@@ -122,11 +122,10 @@
                 if (doc.exists) {
                     callAS3("as_onLoginResult", "error", "Username already exists.", 0, "");
                 } else {
-                    // Create the new user with email
+                    // Create the new user
                     await docRef.set({
                         username: user,
                         password: pass,
-                        email: email,
                         points: 0,
                         xmlData: "",
                         createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -137,46 +136,6 @@
             } catch(e) {
                 console.error("Firebase Register Error:", e);
                 callAS3("as_onLoginResult", "error", "Database connection failed.", 0, "");
-            }
-        }
-
-        window.js_forgotPassword = async function(user) {
-            console.log("JS: Forgot Password recovery initiated for user:", user);
-            try {
-                const docRef = db.collection("users").doc(user.toLowerCase());
-                const doc = await docRef.get();
-
-                if (doc.exists) {
-                    const data = doc.data();
-                    if (data.email) {
-                        // Send POST request to Vercel Serverless Function
-                        const response = await fetch("/api/forgot-password", {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json"
-                            },
-                            body: JSON.stringify({
-                                username: data.username || user,
-                                email: data.email,
-                                password: data.password
-                            })
-                        });
-
-                        const resData = await response.json();
-                        if (response.ok) {
-                            callAS3("as_onForgotPasswordResult", "success", "Recovery email sent to " + data.email);
-                        } else {
-                            callAS3("as_onForgotPasswordResult", "error", resData.error || "Email delivery failed.");
-                        }
-                    } else {
-                        callAS3("as_onForgotPasswordResult", "error", "No email registered for this account.");
-                    }
-                } else {
-                    callAS3("as_onForgotPasswordResult", "error", "Username not found.");
-                }
-            } catch(e) {
-                console.error("Firebase Forgot Password Error:", e);
-                callAS3("as_onForgotPasswordResult", "error", "Database connection failed.");
             }
         }
 
