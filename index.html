@@ -92,6 +92,7 @@
 
         let tempLoginPoints = 0;
         let tempLoginXmlData = "";
+        let tempLoginPass = "";
 
         window.js_login = async function(user, pass) {
             console.log("JS: Logging in via Firebase...");
@@ -103,6 +104,7 @@
                 if (doc.exists) {
                     const data = doc.data();
                     if (data.password === pass) {
+                        tempLoginPass = pass; // Cache password for settings updates
                         if (data.email) {
                             callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, data.xmlData || "");
                         } else {
@@ -222,6 +224,25 @@
                         // Complete login success flow inside Flash
                         callAS3("as_onCodeVerified", "success_add_email", "");
                         callAS3("as_onLoginResult", "success", verificationUser, tempLoginPoints, tempLoginXmlData);
+                    } else if (verificationContext === "change_email_pass") {
+                        // Verify and save new email/password settings
+                        const docRef = db.collection("users").doc(verificationUser.toLowerCase());
+                        const updates = {
+                            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                        };
+                        if (verificationEmail) {
+                            updates.email = verificationEmail;
+                        }
+                        if (verificationPass) {
+                            updates.password = verificationPass;
+                        }
+                        await docRef.update(updates);
+                        
+                        // Update cache
+                        if (verificationPass) {
+                            tempLoginPass = verificationPass;
+                        }
+                        callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
                     }
                 } catch(e) {
                     console.error("Firestore update error inside verification:", e);
@@ -229,6 +250,37 @@
                 }
             } else {
                 callAS3("as_onCodeVerified", "error", "Invalid verification code.");
+            }
+        }
+
+        window.js_updateSettings = async function(user, pass, newEmail, newPass) {
+            console.log("JS: Updating settings for user:", user);
+            try {
+                const docRef = db.collection("users").doc(user.toLowerCase());
+                const doc = await docRef.get();
+
+                if (doc.exists && doc.data().password === pass) {
+                    const updates = {
+                        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                    };
+                    if (newEmail && newEmail.length > 3) {
+                        updates.email = newEmail;
+                    }
+                    if (newPass && newPass.length > 2) {
+                        updates.password = newPass;
+                    }
+
+                    await docRef.update(updates);
+                    if (newPass) {
+                        tempLoginPass = newPass;
+                    }
+                    callAS3("as_onCodeVerified", "success_settings_no_code", "Password successfully updated!");
+                } else {
+                    callAS3("as_onCodeVerified", "error", "Authentication failed.");
+                }
+            } catch(e) {
+                console.error("Firebase Update Settings Error:", e);
+                callAS3("as_onCodeVerified", "error", "Database connection failed.");
             }
         }
 
