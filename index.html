@@ -106,10 +106,10 @@
                     if (data.password === pass) {
                         tempLoginPass = pass; // Cache password for settings updates
                         if (data.email) {
-                            callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, data.xmlData || "");
+                            callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, data.xmlData || "", data.email || "");
                         } else {
                             // Old account, request email linking and load their points/xmlData into Flash
-                            callAS3("as_onLoginResult", "need_email", data.username || user, Number(data.points) || 0, data.xmlData || "");
+                            callAS3("as_onLoginResult", "need_email", data.username || user, Number(data.points) || 0, data.xmlData || "", "");
                         }
                     } else {
                         callAS3("as_onLoginResult", "error", "Incorrect password", 0, "");
@@ -221,9 +221,10 @@
                             email: verificationEmail,
                             lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
                         });
-                        // Complete login success flow inside Flash
+                        // Notify Flash of the newly saved email, then complete login
+                        callAS3("as_onEmailSet", verificationEmail);
                         callAS3("as_onCodeVerified", "success_add_email", "");
-                        callAS3("as_onLoginResult", "success", verificationUser, tempLoginPoints, tempLoginXmlData);
+                        callAS3("as_onLoginResult", "success", verificationUser, tempLoginPoints, tempLoginXmlData, verificationEmail);
                     } else if (verificationContext === "change_email_pass") {
                         // Verify and save new email/password settings
                         const docRef = db.collection("users").doc(verificationUser.toLowerCase());
@@ -238,9 +239,12 @@
                         }
                         await docRef.update(updates);
                         
-                        // Update cache
+                        // Update caches
                         if (verificationPass) {
                             tempLoginPass = verificationPass;
+                        }
+                        if (verificationEmail) {
+                            callAS3("as_onEmailSet", verificationEmail);
                         }
                         callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
                     }
