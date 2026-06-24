@@ -104,10 +104,10 @@
                     const data = doc.data();
                     if (data.password === pass) {
                         if (data.email) {
-                            callAS3("as_onLoginResult", "success", "", Number(data.points) || 0, data.xmlData || "");
+                            callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, data.xmlData || "");
                         } else {
                             // Old account, request email linking and load their points/xmlData into Flash
-                            callAS3("as_onLoginResult", "need_email", "", Number(data.points) || 0, data.xmlData || "");
+                            callAS3("as_onLoginResult", "need_email", data.username || user, Number(data.points) || 0, data.xmlData || "");
                         }
                     } else {
                         callAS3("as_onLoginResult", "error", "Incorrect password", 0, "");
@@ -221,7 +221,7 @@
                         });
                         // Complete login success flow inside Flash
                         callAS3("as_onCodeVerified", "success_add_email", "");
-                        callAS3("as_onLoginResult", "success", "", tempLoginPoints, tempLoginXmlData);
+                        callAS3("as_onLoginResult", "success", verificationUser, tempLoginPoints, tempLoginXmlData);
                     }
                 } catch(e) {
                     console.error("Firestore update error inside verification:", e);
