@@ -29,10 +29,78 @@
             height: 100% !important;
             display: block;
         }
+
+        #copyright-link {
+            position: fixed;
+            right: 12px;
+            bottom: 10px;
+            z-index: 1000;
+            color: rgba(255, 255, 255, 0.55);
+            font: 12px/1.4 Arial, sans-serif;
+            text-decoration: underline;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        #copyright-panel {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 1001;
+            background: rgba(0, 0, 0, 0.65);
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        #copyright-panel.open {
+            display: flex;
+        }
+
+        #copyright-panel .panel-content {
+            max-width: 640px;
+            background: #f4fff4;
+            color: #1a3d1a;
+            border-radius: 16px;
+            padding: 24px 28px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+            font: 14px/1.5 Arial, sans-serif;
+        }
+
+        #copyright-panel h2 {
+            margin: 0 0 12px;
+            font-size: 20px;
+        }
+
+        #copyright-panel p {
+            margin: 0 0 12px;
+        }
+
+        #copyright-panel button {
+            margin-top: 8px;
+            border: 0;
+            border-radius: 10px;
+            padding: 10px 16px;
+            background: #2f7d32;
+            color: #fff;
+            font: 14px Arial, sans-serif;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
     <div id="ruffle-container"></div>
+    <a id="copyright-link" href="#" aria-label="Bible copyright and attribution">Bible Copyright</a>
+    <div id="copyright-panel" role="dialog" aria-labelledby="copyright-title" aria-modal="true">
+        <div class="panel-content">
+            <h2 id="copyright-title">Bible Copyright &amp; Attribution</h2>
+            <p>Lily Pad Hop is a free, non-profit Bible memorization game.</p>
+            <p><strong>King James Version (KJV):</strong> Public Domain.</p>
+            <p><strong>New International Version (NIV):</strong> Scripture quotations taken from The Holy Bible, New International Version&reg; NIV&reg; Copyright &copy; 1973, 1978, 1984, 2011 by Biblica, Inc. Used by permission. All rights reserved worldwide.</p>
+            <p>NIV passages are limited to 25 verses or 2 chapters per request, per the Biblica Fast-Track Bible License.</p>
+            <button type="button" id="copyright-close">Close</button>
+        </div>
+    </div>
 
     <!-- Ruffle Engine -->
     <script src="https://unpkg.com/@ruffle-rs/ruffle"></script>
@@ -58,6 +126,29 @@
         const db = firebase.firestore();
 
         let rufflePlayerInstance = null;
+
+        // Deploy the Cloudflare Worker and paste its URL here.
+        // Example: https://lilypadhop-niv-proxy.your-account.workers.dev
+        const NIV_WORKER_URL = "https://lilypadhop-niv-proxy.YOUR_SUBDOMAIN.workers.dev";
+
+        const copyrightLink = document.getElementById("copyright-link");
+        const copyrightPanel = document.getElementById("copyright-panel");
+        const copyrightClose = document.getElementById("copyright-close");
+
+        copyrightLink.addEventListener("click", (event) => {
+            event.preventDefault();
+            copyrightPanel.classList.add("open");
+        });
+
+        copyrightClose.addEventListener("click", () => {
+            copyrightPanel.classList.remove("open");
+        });
+
+        copyrightPanel.addEventListener("click", (event) => {
+            if (event.target === copyrightPanel) {
+                copyrightPanel.classList.remove("open");
+            }
+        });
 
         window.RufflePlayer = window.RufflePlayer || {};
         window.addEventListener("load", (event) => {
@@ -447,6 +538,36 @@
                 }
             } catch(e) {
                 console.error("Firebase Save Cloud Data Error:", e);
+            }
+        }
+
+        window.js_fetchNivVerse = async function(ref) {
+            console.log("JS: Fetching NIV passage via worker:", ref);
+            try {
+                if (!NIV_WORKER_URL || NIV_WORKER_URL.includes("YOUR_SUBDOMAIN")) {
+                    callAS3("as_onVerseResult", "error", "", "", "NIV worker URL is not configured yet.");
+                    return;
+                }
+
+                const url = NIV_WORKER_URL + "?ref=" + encodeURIComponent(ref);
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    callAS3("as_onVerseResult", "error", "", "", data.error || "Unable to fetch NIV passage.");
+                    return;
+                }
+
+                callAS3(
+                    "as_onVerseResult",
+                    "success",
+                    data.reference || ref,
+                    data.text || "",
+                    data.notice || ""
+                );
+            } catch (error) {
+                console.error("NIV fetch error:", error);
+                callAS3("as_onVerseResult", "error", "", "", "Connection failed while fetching NIV passage.");
             }
         }
 
