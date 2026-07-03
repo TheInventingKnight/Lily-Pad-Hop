@@ -549,7 +549,7 @@
                     return;
                 }
 
-                const url = NIV_WORKER_URL + "?ref=" + encodeURIComponent(ref);
+                const url = NIV_WORKER_URL + "?ref=" + encodeURIComponent(ref) + "&version=niv";
                 const response = await fetch(url);
                 const data = await response.json();
 
@@ -568,6 +568,36 @@
             } catch (error) {
                 console.error("NIV fetch error:", error);
                 callAS3("as_onVerseResult", "error", "", "", "Connection failed while fetching NIV passage.");
+            }
+        }
+
+        window.js_fetchEsvVerse = async function(ref) {
+            console.log("JS: Fetching ESV passage via worker:", ref);
+            try {
+                if (!NIV_WORKER_URL || NIV_WORKER_URL.includes("YOUR_SUBDOMAIN")) {
+                    callAS3("as_onVerseResult", "error", "", "", "ESV worker URL is not configured yet.");
+                    return;
+                }
+
+                const url = NIV_WORKER_URL + "?ref=" + encodeURIComponent(ref) + "&version=esv";
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    callAS3("as_onVerseResult", "error", "", "", data.error || "Unable to fetch ESV passage.");
+                    return;
+                }
+
+                callAS3(
+                    "as_onVerseResult",
+                    "success",
+                    data.reference || ref,
+                    data.text || "",
+                    data.notice || ""
+                );
+            } catch (error) {
+                console.error("ESV fetch error:", error);
+                callAS3("as_onVerseResult", "error", "", "", "Connection failed while fetching ESV passage.");
             }
         }
 
