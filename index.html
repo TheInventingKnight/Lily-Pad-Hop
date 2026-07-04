@@ -42,6 +42,41 @@
             user-select: none;
         }
 
+        #niv-attribution-bar {
+            display: none;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 115px; /* leave room for Bible Copyright link */
+            background: rgba(0, 20, 0, 0.82);
+            color: rgba(220, 255, 220, 0.90);
+            font: 11px/1.5 Arial, sans-serif;
+            padding: 5px 36px 5px 14px;
+            z-index: 999;
+        }
+
+        #niv-attribution-bar.visible {
+            display: block;
+        }
+
+        #niv-attribution-bar a {
+            color: #7fc97a;
+        }
+
+        #niv-attribution-bar .attrib-close {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: rgba(220, 255, 220, 0.7);
+            font-size: 14px;
+            cursor: pointer;
+            padding: 2px 5px;
+            line-height: 1;
+        }
+
         #copyright-panel {
             display: none;
             position: fixed;
@@ -90,6 +125,10 @@
 </head>
 <body>
     <div id="ruffle-container"></div>
+    <div id="niv-attribution-bar" role="note" aria-label="NIV Bible attribution">
+        Scripture quotations from the NIV&reg; Bible. Copyright &copy; 1973, 1978, 1984, 2011 by Biblica, Inc. Used by permission. All rights reserved worldwide. <a href="https://www.biblica.com" target="_blank" rel="noopener noreferrer">Visit Biblica.com</a>
+        <button class="attrib-close" aria-label="Dismiss attribution" id="niv-attrib-close">&times;</button>
+    </div>
     <a id="copyright-link" href="#" aria-label="Bible copyright and attribution">Bible Copyright</a>
     <div id="copyright-panel" role="dialog" aria-labelledby="copyright-title" aria-modal="true">
         <div class="panel-content">
@@ -135,6 +174,20 @@
         const copyrightLink = document.getElementById("copyright-link");
         const copyrightPanel = document.getElementById("copyright-panel");
         const copyrightClose = document.getElementById("copyright-close");
+        const nivBar = document.getElementById("niv-attribution-bar");
+        const nivBarClose = document.getElementById("niv-attrib-close");
+
+        function showNivAttribution() {
+            if (nivBar) nivBar.classList.add("visible");
+        }
+
+        function hideNivAttribution() {
+            if (nivBar) nivBar.classList.remove("visible");
+        }
+
+        if (nivBarClose) {
+            nivBarClose.addEventListener("click", hideNivAttribution);
+        }
 
         copyrightLink.addEventListener("click", (event) => {
             event.preventDefault();
@@ -179,6 +232,24 @@
                 rufflePlayerInstance[func](...args);
             }
         }
+
+        // --- Print Function for Ruffle ---
+        window.printGameScreen = function(base64Image) {
+            const img = new Image();
+            img.src = "data:image/jpeg;base64," + base64Image;
+            img.onload = function() {
+                const printWindow = window.open('', '_blank');
+                if (printWindow) {
+                    printWindow.document.write('<html><head><title>Lily Pad Hop - Print</title></head><body style="margin:0;padding:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#fff;">');
+                    printWindow.document.write('<img src="' + img.src + '" style="max-width:100%;max-height:100vh;object-fit:contain;">');
+                    printWindow.document.write('</body></html>');
+                    printWindow.document.close();
+                    printWindow.onload = function() {
+                        printWindow.print();
+                    };
+                }
+            };
+        };
 
         // --- FIREBASE FIRESTORE INTEGRATION ---
 
