@@ -233,22 +233,96 @@
             }
         }
 
-        // --- Print Function for Ruffle ---
-        window.printGameScreen = function(base64Image) {
-            const img = new Image();
-            img.src = "data:image/jpeg;base64," + base64Image;
-            img.onload = function() {
-                const printWindow = window.open('', '_blank');
-                if (printWindow) {
-                    printWindow.document.write('<html><head><title>Lily Pad Hop - Print</title></head><body style="margin:0;padding:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#fff;">');
-                    printWindow.document.write('<img src="' + img.src + '" style="max-width:100%;max-height:100vh;object-fit:contain;">');
-                    printWindow.document.write('</body></html>');
-                    printWindow.document.close();
-                    printWindow.onload = function() {
-                        printWindow.print();
-                    };
-                }
-            };
+        // --- High-Fidelity Print Replacement System ---
+        window.executePerfectPrint = function(printDataJson) {
+            try {
+                const printData = JSON.parse(printDataJson);
+                
+                // Create hidden print context
+                const printContainer = document.createElement('div');
+                printContainer.style.cssText = `
+                    position: fixed;
+                    top: -9999px;
+                    left: -9999px;
+                    width: 1024px;
+                    height: 768px;
+                    background: linear-gradient(135deg, #1a5f2a 0%, #0d3d15 100%);
+                    font-family: Arial, sans-serif;
+                    color: #ffffff;
+                    padding: 40px;
+                    box-sizing: border-box;
+                `;
+                
+                // Reconstruct the finish screen layout
+                printContainer.innerHTML = `
+                    <div style="text-align: center; margin-bottom: 30px;">
+                        <h1 style="font-size: 48px; margin: 0; color: #90EE90; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">LILY PAD HOP</h1>
+                        <h2 style="font-size: 32px; margin: 10px 0; color: #98FB98;">Certificate of Achievement</h2>
+                    </div>
+                    
+                    <div style="background: rgba(255,255,255,0.1); border-radius: 20px; padding: 30px; margin-bottom: 30px; border: 3px solid #90EE90;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <div style="font-size: 24px;">
+                                <strong>Player:</strong> ${printData.playerName}
+                            </div>
+                            <div style="font-size: 24px;">
+                                <strong>Date:</strong> ${printData.date}
+                            </div>
+                        </div>
+                        
+                        <div style="text-align: center; margin: 30px 0;">
+                            <div style="font-size: 72px; font-weight: bold; color: #FFD700; text-shadow: 3px 3px 6px rgba(0,0,0,0.7);">
+                                ${printData.score}
+                            </div>
+                            <div style="font-size: 28px; color: #98FB98; margin-top: 10px;">POINTS</div>
+                        </div>
+                        
+                        <div style="text-align: center; margin: 20px 0;">
+                            <div style="font-size: 36px; font-weight: bold; color: #90EE90; text-transform: uppercase; letter-spacing: 3px;">
+                                ${printData.rank}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="background: rgba(0,0,0,0.3); border-radius: 15px; padding: 25px; margin-bottom: 20px;">
+                        <div style="font-size: 28px; text-align: center; margin-bottom: 15px; color: #98FB98;">
+                            ${printData.reference}
+                        </div>
+                    </div>
+                    
+                    <div style="background: rgba(255,255,255,0.95); border-radius: 15px; padding: 20px; color: #1a3d1a;">
+                        <div style="font-size: 18px; line-height: 1.6; text-align: justify; max-height: 200px; overflow: hidden; margin-bottom: 15px;">
+                            ${printData.passageText}
+                        </div>
+                        <div style="font-size: 14px; text-align: center; color: #666; border-top: 1px solid #ccc; padding-top: 10px;">
+                            ${printData.notice}
+                        </div>
+                    </div>
+                    
+                    <div style="text-align: center; margin-top: 30px; font-size: 16px; color: #90EE90;">
+                        Lily Pad Hop - Bible Memorization Game
+                    </div>
+                `;
+                
+                // Add to document temporarily
+                document.body.appendChild(printContainer);
+                
+                // Print the specific container
+                const originalContents = document.body.innerHTML;
+                document.body.innerHTML = '';
+                document.body.appendChild(printContainer);
+                
+                window.print();
+                
+                // Restore original contents
+                document.body.innerHTML = originalContents;
+                
+                // Clean up
+                printContainer.remove();
+                
+            } catch (error) {
+                console.error('Print system error:', error);
+            }
         };
 
         // --- FIREBASE FIRESTORE INTEGRATION ---
