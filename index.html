@@ -379,6 +379,7 @@
     <!-- Firebase SDK Compat libraries (Drop-in replacements for simple HTML sites) -->
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
 
     <script>
         // *** PASTE YOUR FIREBASE CONFIG HERE ***
@@ -486,6 +487,11 @@
                     loader.classList.add("fade-out");
                     setTimeout(() => loader.remove(), 600);
                 }
+                
+                // Trigger auto-login if a valid session exists
+                setTimeout(() => {
+                    triggerAutoLoginIfReady();
+                }, 800);
             }).catch((err) => {
                 console.error("SWF load failed:", err);
                 const loaderStatus = document.querySelector(".loading-status");
@@ -495,6 +501,39 @@
                 }
             });
         });
+        
+        // Auto-login / Session Persistence State
+        let autologinUserDoc = null;
+        let isAuthReady = false;
+
+        firebase.auth().onAuthStateChanged(async (user) => {
+            isAuthReady = true;
+            if (user) {
+                console.log("JS: Auto-login detected for user UID:", user.uid);
+                try {
+                    // Direct fetch by UID — works under strict ownership rules
+                    const doc = await db.collection("users").doc(user.uid).get();
+                    if (doc.exists) {
+                        autologinUserDoc = doc.data();
+                        console.log("JS: Loaded auto-login user doc:", autologinUserDoc.username);
+                        triggerAutoLoginIfReady();
+                    } else {
+                        console.log("JS: No Firestore user doc found at UID:", user.uid);
+                    }
+                } catch(e) {
+                    console.error("Firebase Auto-login document fetch error:", e);
+                }
+            } else {
+                autologinUserDoc = null;
+            }
+        });
+
+        function triggerAutoLoginIfReady() {
+            if (autologinUserDoc && rufflePlayerInstance) {
+                console.log("JS: Auto-logging into SWF for user:", autologinUserDoc.username);
+                callAS3("as_onLoginResult", "success", autologinUserDoc.username, Number(autologinUserDoc.points) || 0, autologinUserDoc.xmlData || "", autologinUserDoc.email || "");
+            }
+        }
         
         // --- Helper to talk to Flash ---
         function callAS3(func, ...args) {
@@ -510,32 +549,48 @@
         let tempLoginPass = "";
 
         window.js_login = async function(user, pass) {
-            console.log("JS: Logging in via Firebase...");
+            console.log("JS: Logging in via Firebase Auth...");
             try {
-                // Using lowercase username as the document ID so it's case insensitive
-                const docRef = db.collection("users").doc(user.toLowerCase());
-                const doc = await docRef.get();
+                // Phase 1: Public lookup — only the email is stored here, safe to expose
+                const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
 
-                if (doc.exists) {
-                    const data = doc.data();
-                    if (data.password === pass) {
-                        tempLoginPass = pass; // Cache password for settings updates
-                        if (data.email) {
+                if (usernameDoc.exists && usernameDoc.data().email) {
+                    const email = usernameDoc.data().email;
+                    try {
+                        const userCredential = await firebase.auth().signInWithEmailAndPassword(email, pass);
+                        tempLoginPass = pass;
+
+                        // Phase 2: Fetch private profile by UID — protected by ownership rule
+                        const privateDoc = await db.collection("users").doc(userCredential.user.uid).get();
+                        if (privateDoc.exists) {
+                            const data = privateDoc.data();
                             callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, data.xmlData || "", data.email || "");
                         } else {
-                            // Old account, request email linking and load their points/xmlData into Flash
-                            callAS3("as_onLoginResult", "need_email", data.username || user, Number(data.points) || 0, data.xmlData || "", "");
+                            callAS3("as_onLoginResult", "error", "Account data not found. Please contact support.", 0, "");
                         }
-                    } else {
-                        callAS3("as_onLoginResult", "error", "Incorrect password", 0, "");
+                    } catch(authError) {
+                        console.error("Firebase Auth Error:", authError);
+                        if (authError.code === "auth/wrong-password" || authError.code === "auth/invalid-credential") {
+                            callAS3("as_onLoginResult", "error", "Incorrect password.", 0, "");
+                        } else if (authError.code === "auth/user-not-found") {
+                            callAS3("as_onLoginResult", "error", "User not found. Please create an account.", 0, "");
+                        } else {
+                            callAS3("as_onLoginResult", "error", authError.message || "Authentication failed.", 0, "");
+                        }
                     }
                 } else {
-                    callAS3("as_onLoginResult", "error", "User not found. Please create an account.", 0, "");
+                    // No /usernames/ doc — could be an old account without email
+                    callAS3("as_onLoginResult", "need_email", user, 0, "", "");
                 }
             } catch(e) {
-                console.error("Firebase Login Error:", e);
+                console.error("Firebase Login Database Error:", e);
                 callAS3("as_onLoginResult", "error", "Database connection failed.", 0, "");
             }
+        }
+
+        window.js_logout = function() {
+            console.log("JS: Logging out from Firebase Auth...");
+            firebase.auth().signOut().catch(e => console.error("Sign out error:", e));
         }
 
         let verificationCode = "";
@@ -579,21 +634,29 @@
             }
         }
 
+        // Peer-level function — NOT nested inside js_sendVerificationCode
         window.js_checkVerificationCode = async function(enteredCode) {
             console.log("JS: Checking code:", enteredCode);
             if (enteredCode === verificationCode) {
                 try {
                     if (verificationContext === "register") {
-                        // Register the user
-                        const docRef = db.collection("users").doc(verificationUser.toLowerCase());
-                        await docRef.set({
+                        // Create native Firebase Auth user
+                        const userCredential = await firebase.auth().createUserWithEmailAndPassword(verificationEmail, verificationPass);
+                        const uid = userCredential.user.uid;
+
+                        // Write private profile to /users/{uid}
+                        await db.collection("users").doc(uid).set({
                             username: verificationUser,
-                            password: verificationPass,
                             email: verificationEmail,
                             points: 0,
                             xmlData: "",
                             createdAt: firebase.firestore.FieldValue.serverTimestamp()
                         });
+                        // Write public email-lookup record to /usernames/{username}
+                        await db.collection("usernames").doc(verificationUser.toLowerCase()).set({
+                            email: verificationEmail
+                        });
+                        // Create public leaderboard entry
                         await db.collection("leaderboard").doc(verificationUser.toLowerCase()).set({
                             username: verificationUser,
                             points: 0
@@ -601,71 +664,62 @@
                         callAS3("as_onCodeVerified", "success_register", "");
 
                     } else if (verificationContext === "recover") {
-                        // Save email and send recovery password
-                        const docRef = db.collection("users").doc(verificationUser.toLowerCase());
-                        const doc = await docRef.get();
-                        if (doc.exists) {
-                            const data = doc.data();
-                            await docRef.update({
-                                email: verificationEmail,
-                                lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-                            });
-                            // Call forgot password mailing backend
-                            const response = await fetch("https://vercel-emailing.vercel.app/api/forgot-password", {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                    username: data.username || verificationUser,
-                                    email: verificationEmail,
-                                    password: data.password
-                                })
-                            });
-                            if (response.ok) {
-                                callAS3("as_onCodeVerified", "success_recover", "Recovery email successfully sent!");
-                            } else {
-                                callAS3("as_onCodeVerified", "error", "Failed to send recovery email.");
-                            }
-                        } else {
-                            callAS3("as_onCodeVerified", "error", "Username not found.");
-                        }
+                        // Look up email from public /usernames/ collection
+                        const usernameDoc = await db.collection("usernames").doc(verificationUser.toLowerCase()).get();
+                        const recoveryEmail = (usernameDoc.exists && usernameDoc.data().email) ? usernameDoc.data().email : verificationEmail;
+                        await firebase.auth().sendPasswordResetEmail(recoveryEmail);
+                        callAS3("as_onCodeVerified", "success_recover", "Recovery email successfully sent!");
 
                     } else if (verificationContext === "add_email") {
-                        // Link email for logged-in user
-                        const docRef = db.collection("users").doc(verificationUser.toLowerCase());
-                        await docRef.update({
+                        // Create Auth account for legacy user without email
+                        const userCredential = await firebase.auth().createUserWithEmailAndPassword(verificationEmail, tempLoginPass);
+                        const uid = userCredential.user.uid;
+
+                        // Update private profile at /users/{uid} with the new email
+                        await db.collection("users").doc(uid).update({
                             email: verificationEmail,
                             lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
                         });
-                        // Notify Flash of the newly saved email, then complete login
+                        // Create the public routing record
+                        await db.collection("usernames").doc(verificationUser.toLowerCase()).set({
+                            email: verificationEmail
+                        });
                         callAS3("as_onEmailSet", verificationEmail);
                         callAS3("as_onCodeVerified", "success_add_email", "");
                         callAS3("as_onLoginResult", "success", verificationUser, tempLoginPoints, tempLoginXmlData, verificationEmail);
+
                     } else if (verificationContext === "change_email_pass") {
-                        // Verify and save new email/password settings
-                        const docRef = db.collection("users").doc(verificationUser.toLowerCase());
-                        const updates = {
-                            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-                        };
+                        const currentUser = firebase.auth().currentUser;
+                        if (!currentUser) {
+                            callAS3("as_onCodeVerified", "error", "No active session found.");
+                            return;
+                        }
+
                         if (verificationEmail) {
-                            updates.email = verificationEmail;
+                            await currentUser.updateEmail(verificationEmail);
                         }
                         if (verificationPass) {
-                            updates.password = verificationPass;
-                        }
-                        await docRef.update(updates);
-                        
-                        // Update caches
-                        if (verificationPass) {
+                            await currentUser.updatePassword(verificationPass);
                             tempLoginPass = verificationPass;
                         }
+
+                        // Update private profile at /users/{uid}
+                        const uidUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
                         if (verificationEmail) {
+                            uidUpdates.email = verificationEmail;
+                        }
+                        await db.collection("users").doc(currentUser.uid).update(uidUpdates);
+
+                        // Update public routing record if email changed
+                        if (verificationEmail) {
+                            await db.collection("usernames").doc(verificationUser.toLowerCase()).set({ email: verificationEmail });
                             callAS3("as_onEmailSet", verificationEmail);
                         }
                         callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
                     }
                 } catch(e) {
-                    console.error("Firestore update error inside verification:", e);
-                    callAS3("as_onCodeVerified", "error", "Database error occurred.");
+                    console.error("Authentication/Firestore verification error:", e);
+                    callAS3("as_onCodeVerified", "error", e.message || "Database error occurred.");
                 }
             } else {
                 callAS3("as_onCodeVerified", "error", "Invalid verification code.");
@@ -675,191 +729,180 @@
         window.js_updateSettings = async function(user, pass, newEmail, newPass) {
             console.log("JS: Updating settings for user:", user);
             try {
-                const docRef = db.collection("users").doc(user.toLowerCase());
-                const doc = await docRef.get();
+                const currentUser = firebase.auth().currentUser;
+                if (currentUser) {
+                    const firestoreUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
 
-                if (doc.exists && doc.data().password === pass) {
-                    const updates = {
-                        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-                    };
-                    if (newEmail && newEmail.length > 3) {
-                        updates.email = newEmail;
-                    }
-                    if (newPass && newPass.length > 2) {
-                        updates.password = newPass;
+                    // Update email in Auth and Firestore if requested
+                    if (newEmail && newEmail !== currentUser.email) {
+                        await currentUser.updateEmail(newEmail);
+                        firestoreUpdates.email = newEmail;
+                        // Keep public routing record in sync
+                        await db.collection("usernames").doc(user.toLowerCase()).set({ email: newEmail });
+                        callAS3("as_onEmailSet", newEmail);
                     }
 
-                    await docRef.update(updates);
+                    // Update password in Auth if requested
                     if (newPass) {
+                        await currentUser.updatePassword(newPass);
                         tempLoginPass = newPass;
                     }
-                    callAS3("as_onCodeVerified", "success_settings_no_code", "Password successfully updated!");
+
+                    // Persist any changed fields to the private profile doc
+                    if (Object.keys(firestoreUpdates).length > 1) {
+                        await db.collection("users").doc(currentUser.uid).update(firestoreUpdates);
+                    }
+
+                    callAS3("as_onCodeVerified", "success_settings_no_code", "Settings successfully updated!");
                 } else {
                     callAS3("as_onCodeVerified", "error", "Authentication failed.");
                 }
             } catch(e) {
                 console.error("Firebase Update Settings Error:", e);
-                callAS3("as_onCodeVerified", "error", "Database connection failed.");
+                callAS3("as_onCodeVerified", "error", e.message || "Settings update failed.");
             }
         }
 
         window.js_register = async function(user, pass, email) {
-            console.log("JS: Registering Account via Firebase...");
+            console.log("JS: Registering Account via Firebase Auth...");
             try {
-                const docRef = db.collection("users").doc(user.toLowerCase());
-                const doc = await docRef.get();
-
-                if (doc.exists) {
+                // Check username availability via the public /usernames/ collection
+                const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
+                if (usernameDoc.exists) {
                     callAS3("as_onLoginResult", "error", "Username already exists.", 0, "");
-                } else {
-                    // Create the new user with email
-                    await docRef.set({
-                        username: user,
-                        password: pass,
-                        email: email,
-                        points: 0,
-                        xmlData: "",
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                    });
-                    // Create public leaderboard entry
-                    await db.collection("leaderboard").doc(user.toLowerCase()).set({
-                        username: user,
-                        points: 0
-                    });
-                    // Route back to existing login handler to auto-login
-                    callAS3("as_onLoginResult", "success", "", 0, "");
+                    return;
                 }
+
+                // Create native Firebase Auth user
+                const userCredential = await firebase.auth().createUserWithEmailAndPassword(email, pass);
+                const uid = userCredential.user.uid;
+
+                // Write private profile to /users/{uid}
+                await db.collection("users").doc(uid).set({
+                    username: user,
+                    email: email,
+                    points: 0,
+                    xmlData: "",
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                // Write public routing record to /usernames/{username}
+                await db.collection("usernames").doc(user.toLowerCase()).set({
+                    email: email
+                });
+
+                // Create public leaderboard entry
+                await db.collection("leaderboard").doc(user.toLowerCase()).set({
+                    username: user,
+                    points: 0
+                });
+
+                callAS3("as_onLoginResult", "success", "", 0, "");
             } catch(e) {
                 console.error("Firebase Register Error:", e);
-                callAS3("as_onLoginResult", "error", "Database connection failed.", 0, "");
+                callAS3("as_onLoginResult", "error", e.message || "Registration failed.", 0, "");
             }
         }
 
         window.js_forgotPassword = async function(user) {
             console.log("JS: Forgot Password recovery initiated for user:", user);
             try {
-                const docRef = db.collection("users").doc(user.toLowerCase());
-                const doc = await docRef.get();
-
-                if (doc.exists) {
-                    const data = doc.data();
-                    if (data.email) {
-                        // Send POST request to Vercel Serverless Function
-                        const response = await fetch("https://vercel-emailing.vercel.app/api/forgot-password", {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json"
-                            },
-                            body: JSON.stringify({
-                                username: data.username || user,
-                                email: data.email,
-                                password: data.password
-                            })
-                        });
-
-                        const resData = await response.json();
-                        if (response.ok) {
-                            callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
-                        } else {
-                            callAS3("as_onForgotPasswordResult", "error", resData.error || "Email delivery failed.");
-                        }
-                    } else {
-                        // Trigger email prompt screen for old accounts
-                        callAS3("as_onForgotPasswordResult", "need_email", user);
-                    }
+                // Look up email from the public /usernames/ routing collection
+                const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
+                if (usernameDoc.exists && usernameDoc.data().email) {
+                    await firebase.auth().sendPasswordResetEmail(usernameDoc.data().email);
+                    callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
                 } else {
-                    callAS3("as_onForgotPasswordResult", "error", "Username not found.");
+                    // No routing record — legacy account, prompt for email
+                    callAS3("as_onForgotPasswordResult", "need_email", user);
                 }
             } catch(e) {
-                console.error("Firebase/Email Forgot Password Error:", e);
-                callAS3("as_onForgotPasswordResult", "error", "Connection failed. Please try again.");
+                console.error("Firebase Forgot Password Error:", e);
+                callAS3("as_onForgotPasswordResult", "error", e.message || "Connection failed. Please try again.");
             }
         }
 
         window.js_registerEmailAndRecover = async function(user, email) {
-            console.log("JS: Registering email for old user & recovering:", user, "->", email);
+            console.log("JS: Registering email for legacy user & recovering:", user, "->", email);
             try {
-                const docRef = db.collection("users").doc(user.toLowerCase());
-                const doc = await docRef.get();
-
-                if (doc.exists) {
-                    const data = doc.data();
-                    // 1. Update the email field in Firestore user doc
-                    await docRef.update({
-                        email: email,
-                        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-                    });
-
-                    // 2. Send POST request to Vercel Serverless Function
-                    const response = await fetch("https://vercel-emailing.vercel.app/api/forgot-password", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify({
-                            username: data.username || user,
-                            email: email,
-                            password: data.password
-                        })
-                    });
-
-                    const resData = await response.json();
-                    if (response.ok) {
+                // Create an Auth account for this legacy user
+                let uid;
+                try {
+                    const tempPass = Math.random().toString(36).substring(2, 12) + "A1!";
+                    const userCredential = await firebase.auth().createUserWithEmailAndPassword(email, tempPass);
+                    uid = userCredential.user.uid;
+                } catch(createErr) {
+                    if (createErr.code === "auth/email-already-in-use") {
+                        // Email already has an Auth account — just send reset email
+                        await firebase.auth().sendPasswordResetEmail(email);
                         callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
-                    } else {
-                        callAS3("as_onForgotPasswordResult", "error", resData.error || "Email delivery failed.");
+                        return;
                     }
-                } else {
-                    callAS3("as_onForgotPasswordResult", "error", "Username not found.");
+                    throw createErr;
                 }
+
+                // Create the private profile at /users/{uid}
+                await db.collection("users").doc(uid).set({
+                    username: user,
+                    email: email,
+                    points: 0,
+                    xmlData: "",
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                // Create the public routing record at /usernames/{username}
+                await db.collection("usernames").doc(user.toLowerCase()).set({ email: email });
+
+                await firebase.auth().sendPasswordResetEmail(email);
+                callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
             } catch(e) {
                 console.error("Firebase Register Email and Recover Error:", e);
-                callAS3("as_onForgotPasswordResult", "error", "Connection failed. Please try again.");
+                callAS3("as_onForgotPasswordResult", "error", e.message || "Connection failed. Please try again.");
             }
         }
 
         window.js_saveScore = async function(user, pass, points) {
-            console.log("JS: Saving Score via Firebase...");
+            console.log("JS: Saving Score via Firebase Auth...");
             try {
-                const docRef = db.collection("users").doc(user.toLowerCase());
-                const doc = await docRef.get();
-                
-                if (doc.exists && doc.data().password === pass) {
-                    const currentPoints = Number(doc.data().points) || 0;
-                    const newPoints = currentPoints + Number(points);
-
-                    // Update user doc
-                    await docRef.update({
-                        points: newPoints,
-                        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-                    });
-                    
-                    // Update leaderboard doc with absolute points
-                    await db.collection("leaderboard").doc(user.toLowerCase()).set({
-                        username: doc.data().username || user,
-                        points: newPoints
-                    }, { merge: true });
-
-                    console.log("Score Saved Successfully");
+                const currentUser = firebase.auth().currentUser;
+                if (!currentUser) {
+                    console.error("Auth Error: No user currently signed in.");
+                    return;
                 }
+                const pointsToAdd = Number(points);
+                if (isNaN(pointsToAdd) || pointsToAdd <= 0) return;
+
+                // Atomic server-side increment — cannot be tampered with from the client console
+                await db.collection("users").doc(currentUser.uid).update({
+                    points: firebase.firestore.FieldValue.increment(pointsToAdd),
+                    lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                // Mirror the increment atomically on the leaderboard too
+                await db.collection("leaderboard").doc(user.toLowerCase()).update({
+                    points: firebase.firestore.FieldValue.increment(pointsToAdd)
+                });
+
+                console.log(`Score Saved: +${pointsToAdd} points`);
             } catch(e) {
                 console.error("Firebase Save Score Error:", e);
             }
         }
-        
+
         window.js_saveCloudData = async function(user, pass, xmlData) {
-            console.log("JS: Saving Cloud XML Data via Firebase...");
+            console.log("JS: Saving Cloud XML Data via Firebase Auth...");
             try {
-                const docRef = db.collection("users").doc(user.toLowerCase());
-                const doc = await docRef.get();
-                
-                if (doc.exists && doc.data().password === pass) {
-                    await docRef.update({
-                        xmlData: xmlData,
-                        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-                    });
-                    console.log("Cloud Data Saved Successfully");
+                const currentUser = firebase.auth().currentUser;
+                if (!currentUser) {
+                    console.error("Auth Error: No user currently signed in.");
+                    return;
                 }
+                // Write directly to /users/{uid} — ownership enforced by Firestore rules
+                await db.collection("users").doc(currentUser.uid).update({
+                    xmlData: xmlData,
+                    lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                console.log("Cloud Data Saved Successfully");
             } catch(e) {
                 console.error("Firebase Save Cloud Data Error:", e);
             }
