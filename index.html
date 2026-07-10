@@ -579,8 +579,16 @@
                         }
                     }
                 } else {
-                    // No /usernames/ doc — could be an old account without email
-                    callAS3("as_onLoginResult", "need_email", user, 0, "", "");
+                    // No /usernames/ doc — check if they have a legacy record in /users/{username}
+                    const legacyDoc = await db.collection("users").doc(user.toLowerCase()).get();
+                    if (legacyDoc.exists) {
+                        const legacyData = legacyDoc.data();
+                        tempLoginPoints = Number(legacyData.points) || 0;
+                        tempLoginXmlData = legacyData.xmlData || "";
+                        callAS3("as_onLoginResult", "need_email", user, tempLoginPoints, tempLoginXmlData, "");
+                    } else {
+                        callAS3("as_onLoginResult", "need_email", user, 0, "", "");
+                    }
                 }
             } catch(e) {
                 console.error("Firebase Login Database Error:", e);
