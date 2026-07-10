@@ -181,9 +181,159 @@
             font: 14px Arial, sans-serif;
             cursor: pointer;
         }
+
+        /* Lily Pad Hop Themed Loading Screen */
+        #loading-screen {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: radial-gradient(circle at center, #0f4625 0%, #031407 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        #loading-screen.fade-out {
+            opacity: 0;
+            transform: scale(1.05);
+            pointer-events: none;
+        }
+        .loading-content {
+            text-align: center;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+        }
+        .loading-title {
+            font-size: 38px;
+            font-weight: 800;
+            margin: 20px 0 5px;
+            letter-spacing: 2px;
+            color: #a3ffb4;
+            text-shadow: 0 0 20px rgba(163, 255, 180, 0.4);
+        }
+        .loading-status {
+            font-size: 13px;
+            color: #72a983;
+            margin-top: 15px;
+            font-style: italic;
+            letter-spacing: 1px;
+        }
+        .pond-scene {
+            position: relative;
+            width: 280px;
+            height: 100px;
+            margin: 0 auto;
+        }
+        .lily-pad-loader {
+            position: absolute;
+            bottom: 10px;
+            width: 50px;
+            height: 15px;
+            background: #1e7039;
+            border-radius: 50%;
+            box-shadow: inset 0 2px 4px rgba(255,255,255,0.2), 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .lily-pad-loader.first { left: 20px; }
+        .lily-pad-loader.second { left: 115px; }
+        .lily-pad-loader.third { left: 210px; }
+        .frog-loader {
+            position: absolute;
+            font-size: 38px;
+            width: 40px;
+            height: 40px;
+            left: 25px;
+            bottom: 22px;
+            animation: hop-sequence 2.8s infinite ease-in-out;
+            transform-origin: bottom center;
+        }
+        @keyframes hop-sequence {
+            0%, 100% {
+                left: 25px;
+                bottom: 22px;
+                transform: scale(1);
+            }
+            15% {
+                left: 70px;
+                bottom: 65px;
+                transform: scaleY(1.15) scaleX(0.9);
+            }
+            30% {
+                left: 120px;
+                bottom: 22px;
+                transform: scale(1);
+            }
+            45% {
+                left: 165px;
+                bottom: 65px;
+                transform: scaleY(1.15) scaleX(0.9);
+            }
+            60% {
+                left: 215px;
+                bottom: 22px;
+                transform: scale(1);
+            }
+            70% {
+                left: 215px;
+                bottom: 22px;
+                transform: scaleY(0.85) scaleX(1.1);
+            }
+            80% {
+                left: 215px;
+                bottom: 22px;
+                transform: scale(1) scaleX(-1);
+            }
+            85% {
+                left: 120px;
+                bottom: 65px;
+                transform: scaleY(1.15) scaleX(-0.9);
+            }
+            92% {
+                left: 25px;
+                bottom: 22px;
+                transform: scale(1) scaleX(1);
+            }
+        }
+        .progress-container {
+            width: 240px;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 3px;
+            margin: 20px auto 0;
+            overflow: hidden;
+            position: relative;
+        }
+        .progress-bar {
+            position: absolute;
+            height: 100%;
+            width: 40%;
+            background: linear-gradient(90deg, #5cff86, #21bf4b);
+            border-radius: 3px;
+            box-shadow: 0 0 10px rgba(92, 255, 134, 0.6);
+            animation: loading-bar-run 1.6s infinite ease-in-out;
+        }
+        @keyframes loading-bar-run {
+            0% { left: -45%; }
+            100% { left: 105%; }
+        }
     </style>
 </head>
 <body>
+    <!-- Custom Lily Pad Hop Loading Screen -->
+    <div id="loading-screen">
+        <div class="loading-content">
+            <div class="pond-scene">
+                <div class="lily-pad-loader first"></div>
+                <div class="lily-pad-loader second"></div>
+                <div class="lily-pad-loader third"></div>
+                <div class="frog-loader">🐸</div>
+            </div>
+            <h1 class="loading-title">Lily Pad Hop</h1>
+            <div class="progress-container">
+                <div class="progress-bar"></div>
+            </div>
+            <p class="loading-status">Starting the engine...</p>
+        </div>
+    </div>
     <div id="ruffle-container"></div>
     <div id="niv-attribution-bar" role="note" aria-label="NIV Bible attribution">
         Scripture quotations from the NIV&reg; Bible. Copyright &copy; 1973, 1978, 1984, 2011 by Biblica, Inc. Used by permission. All rights reserved worldwide. <a href="https://www.biblica.com" target="_blank" rel="noopener noreferrer">Visit Biblica.com</a>
@@ -326,10 +476,24 @@
                 "letterbox": "on", 
                 "autoplay": "on",
                 "unmuteOverlay": "hidden",
-                "quality": "low" // Maintained your quality setting
+                "quality": "low", // Maintained your quality setting
+                "splashScreen": false // Disable Ruffle's default loader
             };
 
-            player.load("LilyPadHop.swf");
+            player.load("LilyPadHop.swf").then(() => {
+                const loader = document.getElementById("loading-screen");
+                if (loader) {
+                    loader.classList.add("fade-out");
+                    setTimeout(() => loader.remove(), 600);
+                }
+            }).catch((err) => {
+                console.error("SWF load failed:", err);
+                const loaderStatus = document.querySelector(".loading-status");
+                if (loaderStatus) {
+                    loaderStatus.textContent = "Loading failed. Please refresh.";
+                    loaderStatus.style.color = "#ff6b6b";
+                }
+            });
         });
         
         // --- Helper to talk to Flash ---
