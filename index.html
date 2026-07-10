@@ -42,6 +42,18 @@
             user-select: none;
         }
 
+        #privacy-link {
+            position: fixed;
+            right: 135px;
+            bottom: 10px;
+            z-index: 1000;
+            color: rgba(255, 255, 255, 0.55);
+            font: 12px/1.4 Arial, sans-serif;
+            text-decoration: underline;
+            cursor: pointer;
+            user-select: none;
+        }
+
         #niv-attribution-bar {
             display: none;
             position: fixed;
@@ -121,6 +133,53 @@
             font: 14px Arial, sans-serif;
             cursor: pointer;
         }
+
+        #privacy-panel {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 1001;
+            background: rgba(0, 0, 0, 0.65);
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        #privacy-panel.open {
+            display: flex;
+        }
+
+        #privacy-panel .panel-content {
+            max-width: 640px;
+            max-height: 80vh;
+            overflow-y: auto;
+            background: #f4fff4;
+            color: #1a3d1a;
+            border-radius: 16px;
+            padding: 24px 28px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+            font: 14px/1.5 Arial, sans-serif;
+        }
+
+        #privacy-panel h2 {
+            margin: 0 0 12px;
+            font-size: 20px;
+        }
+
+        #privacy-panel p {
+            margin: 0 0 12px;
+        }
+
+        #privacy-panel button {
+            margin-top: 8px;
+            border: 0;
+            border-radius: 10px;
+            padding: 10px 16px;
+            background: #2f7d32;
+            color: #fff;
+            font: 14px Arial, sans-serif;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -129,6 +188,7 @@
         Scripture quotations from the NIV&reg; Bible. Copyright &copy; 1973, 1978, 1984, 2011 by Biblica, Inc. Used by permission. All rights reserved worldwide. <a href="https://www.biblica.com" target="_blank" rel="noopener noreferrer">Visit Biblica.com</a>
         <button class="attrib-close" aria-label="Dismiss attribution" id="niv-attrib-close">&times;</button>
     </div>
+    <a id="privacy-link" href="#" aria-label="Privacy Policy">Privacy Policy</a>
     <a id="copyright-link" href="#" aria-label="Bible copyright and attribution">Bible Copyright</a>
     <div id="copyright-panel" role="dialog" aria-labelledby="copyright-title" aria-modal="true">
         <div class="panel-content">
@@ -139,6 +199,26 @@
             <p>NIV passages are limited to 25 verses or 2 chapters per request, per the Biblica Fast-Track Bible License.</p>
             <p><strong>English Standard Version (ESV):</strong> Scripture quotations marked &ldquo;ESV&rdquo; are from the ESV&reg; Bible (The Holy Bible, English Standard Version&reg;), &copy; 2001 by Crossway, a publishing ministry of Good News Publishers. Used by permission. All rights reserved. The ESV text may not be quoted in any publication made available to the public by a Creative Commons license. The ESV may not be translated into any other language. Users may not copy or download more than 500 verses of the ESV Bible or more than one half of any book of the ESV Bible.</p>
             <button type="button" id="copyright-close">Close</button>
+        </div>
+    </div>
+    <div id="privacy-panel" role="dialog" aria-labelledby="privacy-title" aria-modal="true">
+        <div class="panel-content">
+            <h2 id="privacy-title">Privacy Policy</h2>
+            <p>We only use your email for recovering your account.</p>
+            <p>Lily Pad Hop is a completely free, non-commercial Bible memorization game. We value your privacy and comply with personal data protection laws, including the US Children's Online Privacy Protection Act (COPPA) and the EU General Data Protection Regulation (GDPR).</p>
+            <p><strong>1. Data Collection &amp; Legal Basis</strong><br>
+            We only collect one piece of personal data: your email address, which you provide during account creation. Under the GDPR, our legal basis for processing this data is the performance of a contract (providing you with an account).</p>
+            <p><strong>2. Data Use &amp; Internal Operations</strong><br>
+            Your email is used strictly for internal account operations—specifically, verifying your account and safely resetting your password if you forget it. We do not collect names, tracking cookies, or behavioral data. We never use this email for marketing or promotional purposes.</p>
+            <p><strong>3. Children's Privacy (COPPA Compliance)</strong><br>
+            We do not knowingly collect personal information from children under 13 without parental consent, except as permitted by COPPA for internal operations (such as account authentication and password resets). If a user is under 13, their email is used only for these support functions and is never used to contact them for any other reason.</p>
+            <p><strong>4. Third Parties</strong><br>
+            We never sell, share, trade, or distribute your email address to any third-party organization. Your information is kept completely secure and confidential.</p>
+            <p><strong>5. Data Retention &amp; Your Rights</strong><br>
+            We store your email address only for as long as your account remains active. Users (and parents of users under 13) have the right to review their data, object to its processing, or request total deletion of their account and email at any time.</p>
+            <p><strong>6. Contact Us</strong><br>
+            To exercise your rights or ask any questions about this policy, please contact us at biblememorygame@gmail.com.</p>
+            <button type="button" id="privacy-close">Close</button>
         </div>
     </div>
 
@@ -174,6 +254,9 @@
         const copyrightLink = document.getElementById("copyright-link");
         const copyrightPanel = document.getElementById("copyright-panel");
         const copyrightClose = document.getElementById("copyright-close");
+        const privacyLink = document.getElementById("privacy-link");
+        const privacyPanel = document.getElementById("privacy-panel");
+        const privacyClose = document.getElementById("privacy-close");
         const nivBar = document.getElementById("niv-attribution-bar");
         const nivBarClose = document.getElementById("niv-attrib-close");
 
@@ -197,6 +280,20 @@
         copyrightClose.addEventListener("click", () => {
             copyrightPanel.classList.remove("open");
         });
+
+        privacyLink.addEventListener("click", (event) => {
+            event.preventDefault();
+            privacyPanel.classList.add("open");
+        });
+
+        privacyClose.addEventListener("click", () => {
+            privacyPanel.classList.remove("open");
+        });
+
+        // Function to show privacy policy from Flash
+        window.showPrivacyPolicy = function() {
+            privacyPanel.classList.add("open");
+        };
 
         copyrightPanel.addEventListener("click", (event) => {
             if (event.target === copyrightPanel) {
