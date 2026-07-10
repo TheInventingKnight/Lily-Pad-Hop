@@ -579,16 +579,8 @@
                         }
                     }
                 } else {
-                    // No /usernames/ doc — check if they have a legacy record in /users/{username}
-                    const legacyDoc = await db.collection("users").doc(user.toLowerCase()).get();
-                    if (legacyDoc.exists) {
-                        const legacyData = legacyDoc.data();
-                        tempLoginPoints = Number(legacyData.points) || 0;
-                        tempLoginXmlData = legacyData.xmlData || "";
-                        callAS3("as_onLoginResult", "need_email", user, tempLoginPoints, tempLoginXmlData, "");
-                    } else {
-                        callAS3("as_onLoginResult", "need_email", user, 0, "", "");
-                    }
+                    // No /usernames/ doc and all accounts have been migrated. Show "User not found".
+                    callAS3("as_onLoginResult", "error", "User not found. Please create an account.", 0, "");
                 }
             } catch(e) {
                 console.error("Firebase Login Database Error:", e);
