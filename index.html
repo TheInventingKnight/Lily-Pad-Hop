@@ -455,6 +455,49 @@
             }
         };
 
+        window.js_printImage = function(base64Data) {
+            const printWindow = window.open('', '_blank');
+            if (!printWindow) {
+                alert("Please allow popups to print the finish screen.");
+                return;
+            }
+            printWindow.document.write(`
+                <html>
+                <head>
+                    <title>Lily Pad Hop - Certificate</title>
+                    <style>
+                        body {
+                            margin: 0;
+                            display: flex;
+                            justify-content: center;
+                            align-items: center;
+                            height: 100vh;
+                            background-color: white;
+                        }
+                        img {
+                            max-width: 100%;
+                            max-height: 100%;
+                            object-fit: contain;
+                        }
+                        @page {
+                            size: landscape;
+                            margin: 0;
+                        }
+                        @media print {
+                            body {
+                                -webkit-print-color-adjust: exact;
+                            }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <img src="data:image/jpeg;base64,${base64Data}" onload="window.focus(); window.print(); window.close();" />
+                </body>
+                </html>
+            `);
+            printWindow.document.close();
+        };
+
         copyrightPanel.addEventListener("click", (event) => {
             if (event.target === copyrightPanel) {
                 copyrightPanel.classList.remove("open");
