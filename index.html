@@ -593,33 +593,30 @@
             firebase.auth().signOut().catch(e => console.error("Sign out error:", e));
         }
 
-        let verificationCode = "";
-        let verificationEmail = "";
-        let verificationUser = "";
-        let verificationPass = "";
-        let verificationContext = "";
+        // ── Sealed verification transaction ───────────────────────────────────
+        // All verification state is kept inside a single object. Each call to
+        // js_sendVerificationCode atomically replaces the whole object, so a
+        // rapid second tap can never partially overwrite a previous context.
+        let _verifyTx = null;
 
         window.js_sendVerificationCode = async function(email, username, context, password) {
-            // Generate 6-digit code
+            // Generate 6-digit code and capture entire context atomically
             const code = Math.floor(100000 + Math.random() * 900000).toString();
-            verificationCode = code;
-            verificationEmail = email;
-            verificationUser = username;
-            verificationPass = password || "";
-            verificationContext = context;
+            _verifyTx = {
+                code,
+                email,
+                username,
+                pass: password || "",
+                context,
+                createdAt: Date.now()
+            };
 
             console.log(`JS: Generated verification code ${code} for ${email} (${context})`);
             try {
                 const response = await fetch("https://vercel-emailing.vercel.app/api/send-code", {
                     method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        email: email,
-                        code: code,
-                        username: username
-                    })
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email, code, username })
                 });
 
                 const resData = await response.json();
@@ -637,92 +634,107 @@
         // Peer-level function — NOT nested inside js_sendVerificationCode
         window.js_checkVerificationCode = async function(enteredCode) {
             console.log("JS: Checking code:", enteredCode);
-            if (enteredCode === verificationCode) {
-                try {
-                    if (verificationContext === "register") {
-                        // Create native Firebase Auth user
-                        const userCredential = await firebase.auth().createUserWithEmailAndPassword(verificationEmail, verificationPass);
-                        const uid = userCredential.user.uid;
 
-                        // Write private profile to /users/{uid}
-                        await db.collection("users").doc(uid).set({
-                            username: verificationUser,
-                            email: verificationEmail,
-                            points: 0,
-                            xmlData: "",
-                            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                        });
-                        // Write public email-lookup record to /usernames/{username}
-                        await db.collection("usernames").doc(verificationUser.toLowerCase()).set({
-                            email: verificationEmail
-                        });
-                        // Create public leaderboard entry
-                        await db.collection("leaderboard").doc(verificationUser.toLowerCase()).set({
-                            username: verificationUser,
-                            points: 0
-                        });
-                        callAS3("as_onCodeVerified", "success_register", "");
+            // Guard: reject if no pending transaction exists
+            if (!_verifyTx) {
+                callAS3("as_onCodeVerified", "error", "No pending verification. Please request a new code.");
+                return;
+            }
 
-                    } else if (verificationContext === "recover") {
-                        // Look up email from public /usernames/ collection
-                        const usernameDoc = await db.collection("usernames").doc(verificationUser.toLowerCase()).get();
-                        const recoveryEmail = (usernameDoc.exists && usernameDoc.data().email) ? usernameDoc.data().email : verificationEmail;
-                        await firebase.auth().sendPasswordResetEmail(recoveryEmail);
-                        callAS3("as_onCodeVerified", "success_recover", "Recovery email successfully sent!");
+            // Snapshot the current transaction so rapid re-taps cannot mutate it mid-flight
+            const tx = _verifyTx;
 
-                    } else if (verificationContext === "add_email") {
-                        // Create Auth account for legacy user without email
-                        const userCredential = await firebase.auth().createUserWithEmailAndPassword(verificationEmail, tempLoginPass);
-                        const uid = userCredential.user.uid;
-
-                        // Update private profile at /users/{uid} with the new email
-                        await db.collection("users").doc(uid).update({
-                            email: verificationEmail,
-                            lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-                        });
-                        // Create the public routing record
-                        await db.collection("usernames").doc(verificationUser.toLowerCase()).set({
-                            email: verificationEmail
-                        });
-                        callAS3("as_onEmailSet", verificationEmail);
-                        callAS3("as_onCodeVerified", "success_add_email", "");
-                        callAS3("as_onLoginResult", "success", verificationUser, tempLoginPoints, tempLoginXmlData, verificationEmail);
-
-                    } else if (verificationContext === "change_email_pass") {
-                        const currentUser = firebase.auth().currentUser;
-                        if (!currentUser) {
-                            callAS3("as_onCodeVerified", "error", "No active session found.");
-                            return;
-                        }
-
-                        if (verificationEmail) {
-                            await currentUser.updateEmail(verificationEmail);
-                        }
-                        if (verificationPass) {
-                            await currentUser.updatePassword(verificationPass);
-                            tempLoginPass = verificationPass;
-                        }
-
-                        // Update private profile at /users/{uid}
-                        const uidUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
-                        if (verificationEmail) {
-                            uidUpdates.email = verificationEmail;
-                        }
-                        await db.collection("users").doc(currentUser.uid).update(uidUpdates);
-
-                        // Update public routing record if email changed
-                        if (verificationEmail) {
-                            await db.collection("usernames").doc(verificationUser.toLowerCase()).set({ email: verificationEmail });
-                            callAS3("as_onEmailSet", verificationEmail);
-                        }
-                        callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
-                    }
-                } catch(e) {
-                    console.error("Authentication/Firestore verification error:", e);
-                    callAS3("as_onCodeVerified", "error", e.message || "Database error occurred.");
-                }
-            } else {
+            if (enteredCode !== tx.code) {
                 callAS3("as_onCodeVerified", "error", "Invalid verification code.");
+                return;
+            }
+
+            // Consume the transaction immediately — prevents replay attacks
+            _verifyTx = null;
+
+            try {
+                if (tx.context === "register") {
+                    // ── Phase 2 Commit: Auth creation only happens here after email verified ──
+                    const userCredential = await firebase.auth().createUserWithEmailAndPassword(tx.email, tx.pass);
+                    const uid = userCredential.user.uid;
+
+                    // Seed the in-memory password cache immediately so that a newly registered
+                    // user can open Settings and change credentials without logging out first.
+                    tempLoginPass = tx.pass;
+
+                    // 1. Private profile — must exist first so /usernames & /leaderboard rules pass
+                    await db.collection("users").doc(uid).set({
+                        username: tx.username,
+                        email: tx.email,
+                        points: 0,
+                        xmlData: "",
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    // 2. Public routing record
+                    await db.collection("usernames").doc(tx.username.toLowerCase()).set({ email: tx.email });
+                    // 3. Leaderboard entry
+                    await db.collection("leaderboard").doc(tx.username.toLowerCase()).set({
+                        username: tx.username,
+                        points: 0
+                    });
+                    callAS3("as_onCodeVerified", "success_register", "");
+
+                } else if (tx.context === "recover") {
+                    const usernameDoc = await db.collection("usernames").doc(tx.username.toLowerCase()).get();
+                    const recoveryEmail = (usernameDoc.exists && usernameDoc.data().email)
+                        ? usernameDoc.data().email
+                        : tx.email;
+                    await firebase.auth().sendPasswordResetEmail(recoveryEmail);
+                    callAS3("as_onCodeVerified", "success_recover", "Recovery email successfully sent!");
+
+                } else if (tx.context === "change_email_pass") {
+                    const currentUser = firebase.auth().currentUser;
+                    if (!currentUser) {
+                        callAS3("as_onCodeVerified", "error", "No active session found.");
+                        return;
+                    }
+
+                    // ── Guard: tempLoginPass is empty on auto-login sessions ──────────────
+                    // In the change_email_pass context, tx.pass carries the NEW password,
+                    // so we cannot use it for the re-auth credential. If tempLoginPass is
+                    // absent the session is too stale to update safely — tell the user.
+                    if (!tempLoginPass) {
+                        callAS3("as_onCodeVerified", "error",
+                            "Authentication expired. Please log out and log back in before changing your settings.");
+                        return;
+                    }
+
+                    // ── Silent re-authentication to satisfy Firebase's recent-login policy ──
+                    const credential = firebase.auth.EmailAuthProvider.credential(
+                        currentUser.email,
+                        tempLoginPass
+                    );
+                    await currentUser.reauthenticateWithCredential(credential);
+
+                    // Credentials are fresh — safe to update sensitive fields
+                    if (tx.email) {
+                        await currentUser.updateEmail(tx.email);
+                    }
+                    if (tx.pass) {
+                        await currentUser.updatePassword(tx.pass);
+                        tempLoginPass = tx.pass; // Keep in-memory cache in sync
+                    }
+
+                    // 1. Update private profile
+                    const uidUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
+                    if (tx.email) uidUpdates.email = tx.email;
+                    await db.collection("users").doc(currentUser.uid).update(uidUpdates);
+
+                    // 2. Update public routing record if email changed
+                    if (tx.email) {
+                        await db.collection("usernames").doc(tx.username.toLowerCase()).set({ email: tx.email });
+                        callAS3("as_onEmailSet", tx.email);
+                    }
+                    callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
+                }
+            } catch(e) {
+                console.error("Authentication/Firestore verification error:", e);
+                callAS3("as_onCodeVerified", "error", e.message || "Database error occurred.");
             }
         }
 
@@ -730,33 +742,60 @@
             console.log("JS: Updating settings for user:", user);
             try {
                 const currentUser = firebase.auth().currentUser;
-                if (currentUser) {
-                    const firestoreUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
-
-                    // Update email in Auth and Firestore if requested
-                    if (newEmail && newEmail !== currentUser.email) {
-                        await currentUser.updateEmail(newEmail);
-                        firestoreUpdates.email = newEmail;
-                        // Keep public routing record in sync
-                        await db.collection("usernames").doc(user.toLowerCase()).set({ email: newEmail });
-                        callAS3("as_onEmailSet", newEmail);
-                    }
-
-                    // Update password in Auth if requested
-                    if (newPass) {
-                        await currentUser.updatePassword(newPass);
-                        tempLoginPass = newPass;
-                    }
-
-                    // Persist any changed fields to the private profile doc
-                    if (Object.keys(firestoreUpdates).length > 1) {
-                        await db.collection("users").doc(currentUser.uid).update(firestoreUpdates);
-                    }
-
-                    callAS3("as_onCodeVerified", "success_settings_no_code", "Settings successfully updated!");
-                } else {
+                if (!currentUser) {
                     callAS3("as_onCodeVerified", "error", "Authentication failed.");
+                    return;
                 }
+
+                // ── Password resolution for re-authentication ───────────────────────
+                // Priority 1: The explicit `pass` argument typed by the user in the
+                //             Flash settings UI (most reliable — always fresh).
+                // Priority 2: The in-memory cache `tempLoginPass` (populated on manual
+                //             login; empty on auto-login sessions).
+                // Priority 3: Neither is available — bail with a clear error rather
+                //             than silently failing mid-update.
+                const authPassword = (pass && pass.trim()) ? pass.trim() : tempLoginPass;
+                if (!authPassword) {
+                    callAS3("as_onCodeVerified", "error",
+                        "Please log out and log back in before changing your settings.");
+                    return;
+                }
+
+                // Re-authenticate with whatever fresh password we resolved above.
+                // This satisfies Firebase's recent-login policy for sensitive updates.
+                const credential = firebase.auth.EmailAuthProvider.credential(
+                    currentUser.email,
+                    authPassword
+                );
+                await currentUser.reauthenticateWithCredential(credential);
+
+                // Sync the cache to whichever password we used, so that subsequent
+                // updates within the same session continue to work.
+                tempLoginPass = authPassword;
+
+                const firestoreUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
+
+                // Update email in Auth and Firestore if requested
+                if (newEmail && newEmail !== currentUser.email) {
+                    await currentUser.updateEmail(newEmail);
+                    firestoreUpdates.email = newEmail;
+                    // Keep public routing record in sync
+                    await db.collection("usernames").doc(user.toLowerCase()).set({ email: newEmail });
+                    callAS3("as_onEmailSet", newEmail);
+                }
+
+                // Update password in Auth if requested
+                if (newPass) {
+                    await currentUser.updatePassword(newPass);
+                    tempLoginPass = newPass; // Keep in-memory cache in sync with new password
+                }
+
+                // Persist any changed fields to the private profile doc
+                if (Object.keys(firestoreUpdates).length > 1) {
+                    await db.collection("users").doc(currentUser.uid).update(firestoreUpdates);
+                }
+
+                callAS3("as_onCodeVerified", "success_settings_no_code", "Settings successfully updated!");
             } catch(e) {
                 console.error("Firebase Update Settings Error:", e);
                 callAS3("as_onCodeVerified", "error", e.message || "Settings update failed.");
@@ -764,40 +803,25 @@
         }
 
         window.js_register = async function(user, pass, email) {
-            console.log("JS: Registering Account via Firebase Auth...");
+            console.log("JS: Staging registration for:", user);
             try {
-                // Check username availability via the public /usernames/ collection
+                // ── Phase 1: Staging only — NO Auth write yet ────────────────────────
+                // We only verify username availability here. Account creation is
+                // deferred exclusively to js_checkVerificationCode (register context)
+                // so unverified email addresses can never claim a username slot.
                 const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
                 if (usernameDoc.exists) {
                     callAS3("as_onLoginResult", "error", "Username already exists.", 0, "");
                     return;
                 }
 
-                // Create native Firebase Auth user
-                const userCredential = await firebase.auth().createUserWithEmailAndPassword(email, pass);
-                const uid = userCredential.user.uid;
+                // Username is free — dispatch a verification code.
+                // js_sendVerificationCode atomically seals the context into _verifyTx.
+                await js_sendVerificationCode(email, user, "register", pass);
 
-                // Write private profile to /users/{uid}
-                await db.collection("users").doc(uid).set({
-                    username: user,
-                    email: email,
-                    points: 0,
-                    xmlData: "",
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                });
-
-                // Write public routing record to /usernames/{username}
-                await db.collection("usernames").doc(user.toLowerCase()).set({
-                    email: email
-                });
-
-                // Create public leaderboard entry
-                await db.collection("leaderboard").doc(user.toLowerCase()).set({
-                    username: user,
-                    points: 0
-                });
-
-                callAS3("as_onLoginResult", "success", "", 0, "");
+                // Notify Flash to show the verification code entry screen.
+                // The actual callback (as_onCodeSent) is already fired inside
+                // js_sendVerificationCode, so we don't need to call it again here.
             } catch(e) {
                 console.error("Firebase Register Error:", e);
                 callAS3("as_onLoginResult", "error", e.message || "Registration failed.", 0, "");
