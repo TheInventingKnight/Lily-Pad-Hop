@@ -500,6 +500,42 @@
                     loaderStatus.style.color = "#ff6b6b";
                 }
             });
+
+            // ── Ruffle mouseup shim ────────────────────────────────────────────────
+            // Ruffle's internal event routing delivers MOUSE_UP only to the Flash
+            // display object directly under the cursor at release time. When a
+            // player drags a scroll thumb and the cursor moves off the thumb before
+            // releasing, the MOUSE_UP never reaches the screen's listener, leaving
+            // the MOUSE_MOVE handler permanently attached (scrollbar "stuck" bug).
+            //
+            // Fix: any time mouseup fires anywhere on the page, re-dispatch a
+            // synthetic mouseup directly on Ruffle's internal canvas so Ruffle's
+            // own event pipeline can route it correctly into the Flash stage.
+            window.addEventListener("mouseup", function(e) {
+                // Ruffle renders into a <canvas> inside the <ruffle-player> element.
+                const ruffleCanvas = player.shadowRoot
+                    ? player.shadowRoot.querySelector("canvas")
+                    : player.querySelector("canvas");
+                if (ruffleCanvas && e.target !== ruffleCanvas) {
+                    ruffleCanvas.dispatchEvent(new MouseEvent("mouseup", {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        button: e.button,
+                        buttons: e.buttons,
+                        clientX: e.clientX,
+                        clientY: e.clientY,
+                        screenX: e.screenX,
+                        screenY: e.screenY,
+                        movementX: e.movementX,
+                        movementY: e.movementY,
+                        ctrlKey: e.ctrlKey,
+                        altKey: e.altKey,
+                        shiftKey: e.shiftKey,
+                        metaKey: e.metaKey
+                    }));
+                }
+            }, true); // capture phase — fires before anything else consumes the event
         });
         
         // Auto-login / Session Persistence State
