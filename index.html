@@ -455,6 +455,41 @@
             }
         };
 
+        window.js_printRawPixels = function(base64Data, width, height) {
+            console.log("JS: Received raw pixels. Converting to image...");
+            
+            // 1. Decode base64 to binary string
+            const binaryString = atob(base64Data);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            
+            // 2. Create Canvas and ImageData (Flash is ARGB, Canvas requires RGBA)
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            const imgData = ctx.createImageData(width, height);
+            
+            for(let i = 0; i < len; i += 4) {
+                imgData.data[i]     = bytes[i+1]; // R
+                imgData.data[i+1]   = bytes[i+2]; // G
+                imgData.data[i+2]   = bytes[i+3]; // B
+                imgData.data[i+3]   = bytes[i];   // A
+            }
+            
+            ctx.putImageData(imgData, 0, 0);
+            
+            // 3. Extract as JPEG data URL and strip the prefix to match existing print logic
+            const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+            const base64Jpeg = jpegDataUrl.split(',')[1];
+            
+            // 4. Pass the formatted JPEG string to the existing print function
+            window.js_printImage(base64Jpeg);
+        };
+
         window.js_printImage = function(base64Data) {
             const printWindow = window.open('', '_blank');
             if (!printWindow) {
