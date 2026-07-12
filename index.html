@@ -1101,11 +1101,6 @@
                     const startChapter = parseInt(rangeMatch[1]);
                     const endChapter = parseInt(rangeMatch[2]);
                     
-                    if (endChapter - startChapter > 2) {
-                        callAS3("as_onVerseResult", "error", "", "", "KJV passages are limited to 3 chapters maximum. Please try a smaller range.");
-                        return;
-                    }
-                    
                     // Fetch each chapter and combine results
                     let combinedText = "";
                     let combinedReference = book + " " + startChapter + "-" + endChapter;
