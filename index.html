@@ -315,6 +315,44 @@
             0% { left: -45%; }
             100% { left: 105%; }
         }
+        /* Print Container - Hidden on screen, visible on print */
+        #print-container {
+            display: none;
+        }
+
+        @media print {
+            body {
+                background-color: white !important;
+            }
+            
+            /* Hide the game and all UI elements during printing */
+            body > *:not(#print-container) {
+                display: none !important;
+            }
+            
+            /* Show only the certificate */
+            #print-container {
+                display: flex !important;
+                position: fixed;
+                inset: 0;
+                justify-content: center;
+                align-items: center;
+                width: 100%;
+                height: 100%;
+            }
+            
+            #print-container img {
+                max-width: 100%;
+                max-height: 100%;
+                object-fit: contain;
+            }
+            
+            /* Force landscape mode */
+            @page {
+                size: landscape;
+                margin: 0;
+            }
+        }
     </style>
 </head>
 <body>
@@ -491,46 +529,26 @@
         };
 
         window.js_printImage = function(base64Data) {
-            const printWindow = window.open('', '_blank');
-            if (!printWindow) {
-                alert("Please allow popups to print the finish screen.");
-                return;
-            }
-            printWindow.document.write(`
-                <html>
-                <head>
-                    <title>Lily Pad Hop - Certificate</title>
-                    <style>
-                        body {
-                            margin: 0;
-                            display: flex;
-                            justify-content: center;
-                            align-items: center;
-                            height: 100vh;
-                            background-color: white;
-                        }
-                        img {
-                            max-width: 100%;
-                            max-height: 100%;
-                            object-fit: contain;
-                        }
-                        @page {
-                            size: landscape;
-                            margin: 0;
-                        }
-                        @media print {
-                            body {
-                                -webkit-print-color-adjust: exact;
-                            }
-                        }
-                    </style>
-                </head>
-                <body>
-                    <img src="data:image/jpeg;base64,${base64Data}" onload="window.focus(); window.print(); window.close();" />
-                </body>
-                </html>
-            `);
-            printWindow.document.close();
+            // 1. Remove any old print container if the user is printing multiple times
+            let oldContainer = document.getElementById('print-container');
+            if (oldContainer) oldContainer.remove();
+
+            // 2. Create a new print container
+            const container = document.createElement('div');
+            container.id = 'print-container';
+            
+            // 3. Create the image and add it to the container
+            const img = document.createElement('img');
+            img.src = 'data:image/jpeg;base64,' + base64Data;
+            container.appendChild(img);
+            
+            // 4. Inject into the DOM
+            document.body.appendChild(container);
+
+            // 5. Trigger native print dialog (a brief timeout ensures the DOM updates first)
+            setTimeout(() => {
+                window.print();
+            }, 100);
         };
 
         copyrightPanel.addEventListener("click", (event) => {
