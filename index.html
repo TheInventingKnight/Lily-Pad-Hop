@@ -1088,6 +1088,36 @@
             }
         }
 
+        window.js_fetchKjvVerse = async function(ref) {
+            console.log("JS: Fetching KJV passage via worker:", ref);
+            try {
+                if (!NIV_WORKER_URL || NIV_WORKER_URL.includes("YOUR_SUBDOMAIN")) {
+                    callAS3("as_onVerseResult", "error", "", "", "KJV worker URL is not configured yet.");
+                    return;
+                }
+
+                const url = NIV_WORKER_URL + "?ref=" + encodeURIComponent(ref) + "&version=kjv";
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    callAS3("as_onVerseResult", "error", "", "", data.error || "Unable to fetch KJV passage.");
+                    return;
+                }
+
+                callAS3(
+                    "as_onVerseResult",
+                    "success",
+                    data.reference || ref,
+                    data.text || "",
+                    data.notice || ""
+                );
+            } catch (error) {
+                console.error("KJV fetch error:", error);
+                callAS3("as_onVerseResult", "error", "", "", "Connection failed while fetching KJV passage.");
+            }
+        }
+
         window.js_getLeaderboard = async function() {
             console.log("JS: Fetching Leaderboard via Firebase...");
             try {
