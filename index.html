@@ -1089,19 +1089,17 @@
         }
 
         window.js_fetchKjvVerse = async function(ref) {
-            console.log("JS: Fetching KJV passage via worker:", ref);
+            console.log("JS: Fetching KJV passage via free API:", ref);
             try {
-                if (!NIV_WORKER_URL || NIV_WORKER_URL.includes("YOUR_SUBDOMAIN")) {
-                    callAS3("as_onVerseResult", "error", "", "", "KJV worker URL is not configured yet.");
-                    return;
-                }
-
-                const url = NIV_WORKER_URL + "?ref=" + encodeURIComponent(ref) + "&version=kjv";
-                const response = await fetch(url);
+                // Use the free Bible API for KJV (public domain, no authentication needed)
+                const bibleApiUrl = "https://bible-api.com/" + encodeURIComponent(ref) + "?translation=kjv";
+                const response = await fetch(bibleApiUrl);
                 const data = await response.json();
 
                 if (!response.ok || data.error) {
-                    callAS3("as_onVerseResult", "error", "", "", data.error || "Unable to fetch KJV passage.");
+                    const errorMsg = data.error || "Unable to fetch KJV passage. Please check the reference and try again.";
+                    console.error("KJV API error:", errorMsg);
+                    callAS3("as_onVerseResult", "error", "", "", errorMsg);
                     return;
                 }
 
@@ -1110,11 +1108,12 @@
                     "success",
                     data.reference || ref,
                     data.text || "",
-                    data.notice || ""
+                    "King James Version (Public Domain)"
                 );
             } catch (error) {
                 console.error("KJV fetch error:", error);
-                callAS3("as_onVerseResult", "error", "", "", "Connection failed while fetching KJV passage.");
+                const userFriendlyError = "Unable to connect to Bible service. Please check your internet connection and try again.";
+                callAS3("as_onVerseResult", "error", "", "", userFriendlyError);
             }
         }
 
