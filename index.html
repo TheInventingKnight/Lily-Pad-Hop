@@ -1091,25 +1091,75 @@
         window.js_fetchKjvVerse = async function(ref) {
             console.log("JS: Fetching KJV passage via free API:", ref);
             try {
-                // Use the free Bible API for KJV (public domain, no authentication needed)
-                const bibleApiUrl = "https://bible-api.com/" + encodeURIComponent(ref) + "?translation=kjv";
-                const response = await fetch(bibleApiUrl);
-                const data = await response.json();
+                // Check if the reference contains a range (e.g., Psalm 23-24)
+                const rangeMatch = ref.match(/(\d+)\s*-\s*(\d+)/);
+                
+                if (rangeMatch) {
+                    // Handle multi-chapter requests
+                    const bookMatch = ref.match(/^([A-Za-z\s]+)/);
+                    const book = bookMatch ? bookMatch[1].trim() : "";
+                    const startChapter = parseInt(rangeMatch[1]);
+                    const endChapter = parseInt(rangeMatch[2]);
+                    
+                    if (endChapter - startChapter > 2) {
+                        callAS3("as_onVerseResult", "error", "", "", "KJV passages are limited to 3 chapters maximum. Please try a smaller range.");
+                        return;
+                    }
+                    
+                    // Fetch each chapter and combine results
+                    let combinedText = "";
+                    let combinedReference = book + " " + startChapter + "-" + endChapter;
+                    let chapterFetchPromises = [];
+                    
+                    for (let chapter = startChapter; chapter <= endChapter; chapter++) {
+                        const chapterRef = book + " " + chapter;
+                        const chapterUrl = "https://bible-api.com/" + encodeURIComponent(chapterRef) + "?translation=kjv";
+                        chapterFetchPromises.push(fetch(chapterUrl).then(res => res.json()));
+                    }
+                    
+                    const chapterData = await Promise.all(chapterFetchPromises);
+                    
+                    for (let i = 0; i < chapterData.length; i++) {
+                        const data = chapterData[i];
+                        if (data.error) {
+                            const errorMsg = data.error || "Unable to fetch chapter " + (startChapter + i);
+                            console.error("KJV API error for chapter:", errorMsg);
+                            callAS3("as_onVerseResult", "error", "", "", errorMsg);
+                            return;
+                        }
+                        if (data.text) {
+                            combinedText += data.text + " ";
+                        }
+                    }
+                    
+                    callAS3(
+                        "as_onVerseResult",
+                        "success",
+                        combinedReference,
+                        combinedText.trim(),
+                        "King James Version (Public Domain)"
+                    );
+                } else {
+                    // Single chapter/verse request
+                    const bibleApiUrl = "https://bible-api.com/" + encodeURIComponent(ref) + "?translation=kjv";
+                    const response = await fetch(bibleApiUrl);
+                    const data = await response.json();
 
-                if (!response.ok || data.error) {
-                    const errorMsg = data.error || "Unable to fetch KJV passage. Please check the reference and try again.";
-                    console.error("KJV API error:", errorMsg);
-                    callAS3("as_onVerseResult", "error", "", "", errorMsg);
-                    return;
+                    if (!response.ok || data.error) {
+                        const errorMsg = data.error || "Unable to fetch KJV passage. Please check the reference and try again.";
+                        console.error("KJV API error:", errorMsg);
+                        callAS3("as_onVerseResult", "error", "", "", errorMsg);
+                        return;
+                    }
+
+                    callAS3(
+                        "as_onVerseResult",
+                        "success",
+                        data.reference || ref,
+                        data.text || "",
+                        "King James Version (Public Domain)"
+                    );
                 }
-
-                callAS3(
-                    "as_onVerseResult",
-                    "success",
-                    data.reference || ref,
-                    data.text || "",
-                    "King James Version (Public Domain)"
-                );
             } catch (error) {
                 console.error("KJV fetch error:", error);
                 const userFriendlyError = "Unable to connect to Bible service. Please check your internet connection and try again.";
