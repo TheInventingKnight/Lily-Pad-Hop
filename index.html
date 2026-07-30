@@ -731,61 +731,80 @@
                         }
                     }
 
-                    // 2. Check email availability in /emails collection
+                    // 2. Check email availability across ALL accounts via /usernames query
                     if (cleanEmail) {
-                        console.log(`🔍 [CHECK 2] Fetching /emails/${cleanEmail}...`);
+                        console.log(`🔍 [CHECK 2] Querying /usernames for email "${cleanEmail}"...`);
+                        try {
+                            const emailQuery = await db.collection("usernames").where("email", "==", cleanEmail).get();
+                            console.log(`🔍 [CHECK 2 RESULT] /usernames query docs count =`, emailQuery.size);
+                            if (!emailQuery.empty) {
+                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /usernames collection!`);
+                                callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
+                                return;
+                            }
+                            const rawEmail = (email || "").trim();
+                            if (rawEmail !== cleanEmail) {
+                                const rawQuery = await db.collection("usernames").where("email", "==", rawEmail).get();
+                                if (!rawQuery.empty) {
+                                    console.log(`⛔ [BLOCKED] Email "${rawEmail}" found in /usernames collection!`);
+                                    callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
+                                    return;
+                                }
+                            }
+                        } catch(e) {
+                            console.warn("⚠️ [CHECK 2 ERROR] /usernames email query failed:", e);
+                        }
+
+                        // 3. Check /emails collection
+                        console.log(`🔍 [CHECK 3] Fetching /emails/${cleanEmail}...`);
                         try {
                             const emailDoc = await db.collection("emails").doc(cleanEmail).get();
-                            console.log(`🔍 [CHECK 2 RESULT] /emails/${cleanEmail} exists =`, emailDoc.exists, emailDoc.exists ? emailDoc.data() : "");
+                            console.log(`🔍 [CHECK 3 RESULT] /emails/${cleanEmail} exists =`, emailDoc.exists);
                             if (emailDoc.exists) {
                                 console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /emails collection!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
                                 return;
                             }
                         } catch(e) {
-                            console.warn("⚠️ [CHECK 2 ERROR] /emails collection check failed:", e);
+                            console.warn("⚠️ [CHECK 3 ERROR] /emails check failed:", e);
                         }
 
-                        // 3. ALSO check Firebase Auth fetchSignInMethodsForEmail
-                        console.log(`🔍 [CHECK 3] Running fetchSignInMethodsForEmail("${cleanEmail}")...`);
+                        // 4. ALSO check Firebase Auth fetchSignInMethodsForEmail
+                        console.log(`🔍 [CHECK 4] Running fetchSignInMethodsForEmail("${cleanEmail}")...`);
                         try {
                             const methods = await firebase.auth().fetchSignInMethodsForEmail(cleanEmail);
-                            console.log(`🔍 [CHECK 3 RESULT] fetchSignInMethodsForEmail returned methods =`, methods);
+                            console.log(`🔍 [CHECK 4 RESULT] fetchSignInMethodsForEmail returned methods =`, methods);
                             if (methods && methods.length > 0) {
                                 console.log(`⛔ [BLOCKED] Email "${cleanEmail}" registered in Firebase Auth!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
                                 return;
                             }
                         } catch(emailErr) {
-                            console.warn("⚠️ [CHECK 3 ERROR] fetchSignInMethodsForEmail failed:", emailErr);
+                            console.warn("⚠️ [CHECK 4 ERROR] fetchSignInMethodsForEmail failed:", emailErr);
                         }
                     }
                 } else if (context === "change_email_pass") {
                     if (cleanEmail) {
-                        console.log(`🔍 [CHECK 2] Fetching /emails/${cleanEmail}...`);
+                        console.log(`🔍 [CHECK 2] Querying /usernames for email "${cleanEmail}"...`);
                         try {
-                            const emailDoc = await db.collection("emails").doc(cleanEmail).get();
-                            console.log(`🔍 [CHECK 2 RESULT] /emails/${cleanEmail} exists =`, emailDoc.exists);
-                            if (emailDoc.exists) {
-                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /emails collection!`);
+                            const emailQuery = await db.collection("usernames").where("email", "==", cleanEmail).get();
+                            if (!emailQuery.empty) {
+                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /usernames collection!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
                                 return;
                             }
                         } catch(e) {
-                            console.warn("⚠️ [CHECK 2 ERROR] /emails collection check failed:", e);
+                            console.warn("⚠️ [CHECK 2 ERROR] /usernames email query failed:", e);
                         }
 
-                        console.log(`🔍 [CHECK 3] Running fetchSignInMethodsForEmail("${cleanEmail}")...`);
                         try {
-                            const methods = await firebase.auth().fetchSignInMethodsForEmail(cleanEmail);
-                            console.log(`🔍 [CHECK 3 RESULT] fetchSignInMethodsForEmail returned methods =`, methods);
-                            if (methods && methods.length > 0) {
-                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" registered in Firebase Auth!`);
+                            const emailDoc = await db.collection("emails").doc(cleanEmail).get();
+                            if (emailDoc.exists) {
                                 callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
                                 return;
                             }
-                        } catch(emailErr) {
-                            console.warn("⚠️ [CHECK 3 ERROR] fetchSignInMethodsForEmail failed:", emailErr);
+                        } catch(e) {
+                            console.warn("⚠️ [CHECK 3 ERROR] /emails collection check failed:", e);
                         }
                     }
                 }
