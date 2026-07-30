@@ -599,10 +599,15 @@
         });
         
         let isRegistering = false;
+        let autologinUserDoc = null;
+        let isAuthReady = false;
 
         firebase.auth().onAuthStateChanged(async (user) => {
             isAuthReady = true;
-            if (user && !isRegistering) {
+            // Skip anonymous users — they are only used for temporary Firestore reads
+            // (username/email lookups before login). Treating them as real sessions
+            // would overwrite autologinUserDoc with null and break the auto-login flow.
+            if (user && !user.isAnonymous && !isRegistering) {
                 console.log("JS: Auto-login detected for user UID:", user.uid);
                 try {
                     // Direct fetch by UID — works under strict ownership rules
@@ -617,7 +622,8 @@
                 } catch(e) {
                     console.error("Firebase Auto-login document fetch error:", e);
                 }
-            } else {
+            } else if (!user) {
+                // Only clear the auto-login doc when fully signed out (not just on anon sign-in)
                 autologinUserDoc = null;
             }
         });
@@ -687,8 +693,12 @@
         window.js_login = async function(user, pass) {
             console.log("JS: Logging in via Firebase Auth...");
             try {
-                // Ensure auth session exists for protected Firestore lookup
-                if (!firebase.auth().currentUser) {
+                // Ensure auth session exists for protected Firestore lookup.
+                // CRITICAL: Only sign in anonymously if there is NO current session at all.
+                // Calling signInAnonymously() while a real user is signed in would replace
+                // their persisted session with an anonymous one, breaking data persistence.
+                const currentAuthUser = firebase.auth().currentUser;
+                if (!currentAuthUser) {
                     try { await firebase.auth().signInAnonymously(); } catch(e) {}
                 }
 
@@ -708,8 +718,12 @@
                         let privateDoc = await db.collection("users").doc(userCredential.user.uid).get();
                         let data = privateDoc.exists ? privateDoc.data() : null;
 
-                        // Legacy migration check: If xmlData is missing on the UID doc, check the old username document
-                        if (!data || !data.xmlData) {
+                        // Legacy migration check: If the UID doc doesn't exist OR xmlData field
+                        // is explicitly absent (undefined/null), check the old username-keyed doc.
+                        // Use explicit null/undefined check (not falsy) so that xmlData: ""
+                        // (a valid initial value for new accounts) does NOT trigger a legacy lookup.
+                        const xmlDataMissing = !data || data.xmlData === undefined || data.xmlData === null;
+                        if (xmlDataMissing) {
                             try {
                                 const legacyDoc = await db.collection("users").doc(user.toLowerCase()).get();
                                 if (legacyDoc.exists && legacyDoc.data().xmlData) {
@@ -771,7 +785,9 @@
 
             console.log(`JS: Verification code requested for ${cleanEmail} (${context})`);
             try {
-                // Ensure auth session exists for protected Firestore lookups
+                // Ensure auth session exists for protected Firestore lookups.
+                // Only sign in anonymously if there is NO current user at all — never
+                // replace an existing real user session with an anonymous one.
                 if (!firebase.auth().currentUser) {
                     try { await firebase.auth().signInAnonymously(); } catch(e) {}
                 }
@@ -1122,7 +1138,9 @@
         window.js_forgotPassword = async function(user) {
             console.log("JS: Forgot Password recovery initiated for user:", user);
             try {
-                // Ensure auth session exists for protected Firestore lookup
+                // Ensure auth session exists for protected Firestore lookup.
+                // Only sign in anonymously if there is truly no current user — never
+                // replace an existing real user session with an anonymous one.
                 if (!firebase.auth().currentUser) {
                     try { await firebase.auth().signInAnonymously(); } catch(e) {}
                 }
@@ -1154,6 +1172,8 @@
                 }
 
                 // ── Guard: Ensure username is not already claimed by an existing account ──
+                // Only sign in anonymously if there is truly no current user — never
+                // replace an existing real user session with an anonymous one.
                 if (!firebase.auth().currentUser) {
                     try { await firebase.auth().signInAnonymously(); } catch(e) {}
                 }
@@ -1256,10 +1276,13 @@
                     return;
                 }
 
-                // Pre-Parse & Sanitize Cloud Save XML
-                const sanitizedXml = sanitizeCloudXml(xmlData);
-                if (xmlData && !sanitizedXml) {
-                    console.warn("js_saveCloudData Aborted: XML parsing/structure error.");
+                // Pre-Parse & Sanitize Cloud Save XML.
+                // Only abort if the incoming xmlData was non-empty but sanitizer returned
+                // empty string (meaning a fatal parse error occurred). An empty xmlData
+                // input is a valid save (new account with no progress) and must be allowed through.
+                const sanitizedXml = sanitizeCloudXml(xmlData || "");
+                if (xmlData && xmlData.trim().length > 0 && sanitizedXml.trim().length === 0) {
+                    console.warn("js_saveCloudData Aborted: XML parsing/structure error prevented saving.");
                     return;
                 }
 
