@@ -682,7 +682,12 @@
         window.js_login = async function(user, pass) {
             console.log("JS: Logging in via Firebase Auth...");
             try {
-                // Phase 1: Public lookup — only the email is stored here, safe to expose
+                // Ensure auth session exists for protected Firestore lookup
+                if (!firebase.auth().currentUser) {
+                    try { await firebase.auth().signInAnonymously(); } catch(e) {}
+                }
+
+                // Phase 1: Lookup email for username
                 const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
 
                 if (usernameDoc.exists && usernameDoc.data().email) {
@@ -728,19 +733,6 @@
             firebase.auth().signOut().catch(e => console.error("Sign out error:", e));
         }
 
-        // ── Helper: Salted SHA-256 Hash for Verification Codes ────────────────
-        // Raw verification codes are NEVER stored in memory or logged to console.
-        async function hashVerificationCode(code, email, context) {
-            const cleanCode = (code || "").trim();
-            const cleanEmail = (email || "").trim().toLowerCase();
-            const salt = "LilyPadHop_Secure_2026_Salt_#99";
-            const message = `${cleanCode}:${cleanEmail}:${context}:${salt}`;
-            const msgBuffer = new TextEncoder().encode(message);
-            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        }
-
         let _verifyTx = null;
 
         window.js_sendVerificationCode = async function(email, username, context, password) {
@@ -749,6 +741,11 @@
 
             console.log(`JS: Verification code requested for ${cleanEmail} (${context})`);
             try {
+                // Ensure auth session exists for protected Firestore lookups
+                if (!firebase.auth().currentUser) {
+                    try { await firebase.auth().signInAnonymously(); } catch(e) {}
+                }
+
                 // ── Pre-checks before sending code ───────────────────────────
                 if (context === "register") {
                     // 1. Check username availability
@@ -826,35 +823,36 @@
                     }
                 }
 
-                // Generate 6-digit code using cryptographically secure random values
-                const codeArray = new Uint32Array(1);
-                window.crypto.getRandomValues(codeArray);
-                const code = (100000 + (codeArray[0] % 900000)).toString();
+                // ── Server-Side Code Generation & Token Signing via Cloudflare Worker ──
+                // The raw code is generated server-side and emailed directly to the user.
+                // The browser receives an HMAC-signed token. Raw code is NEVER in client memory.
+                const workerBase = (typeof NIV_WORKER_URL !== "undefined" && NIV_WORKER_URL)
+                    ? NIV_WORKER_URL.replace(/\?.*$/, "").replace(/\/+$/, "")
+                    : "https://cloudflare-worker.mattproductions16.workers.dev";
 
-                // Compute one-way SHA-256 hash of code for storage
-                const codeHash = await hashVerificationCode(code, cleanEmail, context);
-
-                _verifyTx = {
-                    codeHash: codeHash,
-                    email: cleanEmail,
-                    username: cleanUser,
-                    pass: password || "",
-                    context: context,
-                    createdAt: Date.now(),
-                    attempts: 0
-                };
-
-                const response = await fetch("https://vercel-emailing.vercel.app/api/send-code", {
+                const response = await fetch(workerBase + "/send-verification", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ email: cleanEmail, code: code, username: cleanUser })
+                    body: JSON.stringify({
+                        email: cleanEmail,
+                        username: cleanUser,
+                        context: context
+                    })
                 });
 
                 const resData = await response.json();
-                if (response.ok) {
+                if (response.ok && resData.success && resData.token) {
+                    _verifyTx = {
+                        token: resData.token,
+                        email: cleanEmail,
+                        username: cleanUser,
+                        pass: password || "",
+                        context: context,
+                        createdAt: Date.now()
+                    };
                     callAS3("as_onCodeSent", "success", "");
                 } else {
-                    callAS3("as_onCodeSent", "error", resData.error || "Failed to send code.");
+                    callAS3("as_onCodeSent", "error", resData.message || "Failed to send code.");
                 }
             } catch(e) {
                 console.error("Verification code error:", e);
@@ -872,7 +870,7 @@
             }
 
             // Guard: reject if no pending transaction exists
-            if (!_verifyTx) {
+            if (!_verifyTx || !_verifyTx.token) {
                 callAS3("as_onCodeVerified", "error", "No pending verification. Please request a new code.");
                 return;
             }
@@ -883,17 +881,14 @@
                     : "https://cloudflare-worker.mattproductions16.workers.dev";
                 const workerUrl = workerBase + "/verify-code";
 
-                // Send the entered code AND the stored hash to the worker.
-                // The worker recomputes the salted SHA-256 hash server-side and compares,
-                // so the raw code is validated without a client-side fallback path.
+                // Send the entered code AND the HMAC-signed token to the worker.
+                // The worker verifies the token's HMAC signature, expiration, and code hash match.
                 const response = await fetch(workerUrl, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                        code:     enteredCode.trim(),
-                        codeHash: _verifyTx.codeHash,
-                        email:    _verifyTx.email,
-                        context:  _verifyTx.context
+                        code:  enteredCode.trim(),
+                        token: _verifyTx.token
                     })
                 });
 
@@ -996,8 +991,11 @@
                         await db.collection("users").doc(currentUser.uid).update(uidUpdates);
 
                         // 2. Update public routing record if email changed
+                        // Fetch verified username from /users/{currentUser.uid} to prevent client-side username spoofing
                         if (tx.email) {
-                            await db.collection("usernames").doc(tx.username.toLowerCase()).set({ email: tx.email });
+                            const userDoc = await db.collection("users").doc(currentUser.uid).get();
+                            const actualUsername = (userDoc.exists && userDoc.data().username) ? userDoc.data().username : tx.username;
+                            await db.collection("usernames").doc(actualUsername.toLowerCase()).set({ email: tx.email });
                             callAS3("as_onEmailSet", tx.email);
                         }
                         callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
@@ -1019,12 +1017,6 @@
                 }
 
                 // ── Password resolution for re-authentication ───────────────────────
-                // Priority 1: The explicit `pass` argument typed by the user in the
-                //             Flash settings UI (most reliable — always fresh).
-                // Priority 2: The in-memory cache `tempLoginPass` (populated on manual
-                //             login; empty on auto-login sessions).
-                // Priority 3: Neither is available — bail with a clear error rather
-                //             than silently failing mid-update.
                 const authPassword = (pass && pass.trim()) ? pass.trim() : tempLoginPass;
                 if (!authPassword) {
                     callAS3("as_onCodeVerified", "error",
@@ -1032,26 +1024,27 @@
                     return;
                 }
 
-                // Re-authenticate with whatever fresh password we resolved above.
-                // This satisfies Firebase's recent-login policy for sensitive updates.
+                // Re-authenticate with fresh password
                 const credential = firebase.auth.EmailAuthProvider.credential(
                     currentUser.email,
                     authPassword
                 );
                 await currentUser.reauthenticateWithCredential(credential);
 
-                // Sync the cache to whichever password we used, so that subsequent
-                // updates within the same session continue to work.
                 tempLoginPass = authPassword;
 
                 const firestoreUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
+
+                // Fetch verified username from /users/{currentUser.uid} to prevent spoofing
+                const userDoc = await db.collection("users").doc(currentUser.uid).get();
+                const actualUsername = (userDoc.exists && userDoc.data().username) ? userDoc.data().username : user;
 
                 // Update email in Auth and Firestore if requested
                 if (newEmail && newEmail !== currentUser.email) {
                     await currentUser.updateEmail(newEmail);
                     firestoreUpdates.email = newEmail;
-                    // Keep public routing record in sync
-                    await db.collection("usernames").doc(user.toLowerCase()).set({ email: newEmail });
+                    // Keep public routing record in sync using verified username
+                    await db.collection("usernames").doc(actualUsername.toLowerCase()).set({ email: newEmail });
                     callAS3("as_onEmailSet", newEmail);
                 }
 
@@ -1088,18 +1081,7 @@
                     return;
                 }
 
-                // ── Check 2: Verify email is not already registered in Auth ───────
-                try {
-                    const methods = await firebase.auth().fetchSignInMethodsForEmail(email.toLowerCase());
-                    if (methods && methods.length > 0) {
-                        callAS3("as_onLoginResult", "error", "Email is already registered. Please login.", 0, "");
-                        return;
-                    }
-                } catch(emailErr) {
-                    console.warn("fetchSignInMethodsForEmail check:", emailErr);
-                }
-
-                // Username & Email are free — dispatch verification code.
+                // ── Check 2: Stage registration via verification flow ──────────────
                 await js_sendVerificationCode(email, user, "register", pass);
             } catch(e) {
                 console.error("Firebase Register Error:", e);
@@ -1110,6 +1092,11 @@
         window.js_forgotPassword = async function(user) {
             console.log("JS: Forgot Password recovery initiated for user:", user);
             try {
+                // Ensure auth session exists for protected Firestore lookup
+                if (!firebase.auth().currentUser) {
+                    try { await firebase.auth().signInAnonymously(); } catch(e) {}
+                }
+
                 // Look up email from the public /usernames/ routing collection
                 const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
                 if (usernameDoc.exists && usernameDoc.data().email) {
@@ -1128,37 +1115,64 @@
         window.js_registerEmailAndRecover = async function(user, email) {
             console.log("JS: Registering email for legacy user & recovering:", user, "->", email);
             try {
+                const cleanUser = (user || "").trim().toLowerCase();
+                const cleanEmail = (email || "").trim().toLowerCase();
+
+                if (!cleanUser || !cleanEmail) {
+                    callAS3("as_onForgotPasswordResult", "error", "Invalid username or email.");
+                    return;
+                }
+
+                // ── Guard: Ensure username is not already claimed by an existing account ──
+                if (!firebase.auth().currentUser) {
+                    try { await firebase.auth().signInAnonymously(); } catch(e) {}
+                }
+
+                const usernameDoc = await db.collection("usernames").doc(cleanUser).get();
+                if (usernameDoc.exists) {
+                    callAS3("as_onForgotPasswordResult", "error", "Username is already registered. Please use password recovery or login.");
+                    return;
+                }
+
+                // Guard: Ensure email is not already in use
+                const emailDoc = await db.collection("emails").doc(cleanEmail).get();
+                if (emailDoc.exists) {
+                    callAS3("as_onForgotPasswordResult", "error", "Email is already registered to another account.");
+                    return;
+                }
+
                 // Create an Auth account for this legacy user
                 let uid;
                 try {
                     const passBytes = new Uint8Array(8);
                     window.crypto.getRandomValues(passBytes);
                     const tempPass = Array.from(passBytes, b => b.toString(36)).join('').substring(0, 10) + "A1!";
-                    const userCredential = await firebase.auth().createUserWithEmailAndPassword(email, tempPass);
+                    const userCredential = await firebase.auth().createUserWithEmailAndPassword(cleanEmail, tempPass);
                     uid = userCredential.user.uid;
                 } catch(createErr) {
                     if (createErr.code === "auth/email-already-in-use") {
-                        // Email already has an Auth account — just send reset email
-                        await firebase.auth().sendPasswordResetEmail(email);
-                        callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
+                        callAS3("as_onForgotPasswordResult", "error", "Email is already registered. Please login.");
                         return;
                     }
                     throw createErr;
                 }
 
-                // Create the private profile at /users/{uid}
+                // Step 1: Create private profile FIRST so Firestore rules allow /usernames write
                 await db.collection("users").doc(uid).set({
                     username: user,
-                    email: email,
+                    email: cleanEmail,
                     points: 0,
                     xmlData: "",
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 });
 
-                // Create the public routing record at /usernames/{username}
-                await db.collection("usernames").doc(user.toLowerCase()).set({ email: email });
+                // Step 2: Create public routing record
+                await db.collection("usernames").doc(cleanUser).set({ email: cleanEmail });
 
-                await firebase.auth().sendPasswordResetEmail(email);
+                // Step 3: Create email uniqueness index
+                await db.collection("emails").doc(cleanEmail).set({ uid: uid });
+
+                await firebase.auth().sendPasswordResetEmail(cleanEmail);
                 callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
             } catch(e) {
                 console.error("Firebase Register Email and Recover Error:", e);
