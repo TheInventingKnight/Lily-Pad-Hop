@@ -696,19 +696,57 @@
         let _verifyTx = null;
 
         window.js_sendVerificationCode = async function(email, username, context, password) {
-            // Generate 6-digit code and capture entire context atomically
-            const code = Math.floor(100000 + Math.random() * 900000).toString();
-            _verifyTx = {
-                code,
-                email,
-                username,
-                pass: password || "",
-                context,
-                createdAt: Date.now()
-            };
-
-            console.log(`JS: Generated verification code ${code} for ${email} (${context})`);
+            console.log(`JS: Verification code requested for ${email} (${context})`);
             try {
+                // ── Pre-checks before sending code ───────────────────────────
+                if (context === "register") {
+                    // Check username availability
+                    if (username) {
+                        const usernameDoc = await db.collection("usernames").doc(username.toLowerCase()).get();
+                        if (usernameDoc.exists) {
+                            callAS3("as_onCodeSent", "error", "Username already exists.");
+                            return;
+                        }
+                    }
+
+                    // Check email availability in Firebase Auth
+                    if (email) {
+                        try {
+                            const methods = await firebase.auth().fetchSignInMethodsForEmail(email.toLowerCase());
+                            if (methods && methods.length > 0) {
+                                callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
+                                return;
+                            }
+                        } catch(emailErr) {
+                            console.warn("fetchSignInMethodsForEmail check error:", emailErr);
+                        }
+                    }
+                } else if (context === "change_email_pass") {
+                    if (email) {
+                        try {
+                            const methods = await firebase.auth().fetchSignInMethodsForEmail(email.toLowerCase());
+                            if (methods && methods.length > 0) {
+                                callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
+                                return;
+                            }
+                        } catch(emailErr) {
+                            console.warn("fetchSignInMethodsForEmail check error:", emailErr);
+                        }
+                    }
+                }
+
+                // Generate 6-digit code and capture entire context atomically
+                const code = Math.floor(100000 + Math.random() * 900000).toString();
+                _verifyTx = {
+                    code,
+                    email,
+                    username,
+                    pass: password || "",
+                    context,
+                    createdAt: Date.now()
+                };
+
+                console.log(`JS: Generated verification code ${code} for ${email} (${context})`);
                 const response = await fetch("https://vercel-emailing.vercel.app/api/send-code", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
