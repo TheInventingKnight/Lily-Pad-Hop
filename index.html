@@ -906,23 +906,26 @@
                     return;
                 }
 
-                // ── Phase 1: Staging only — NO Auth write yet ────────────────────────
-                // We only verify username availability here. Account creation is
-                // deferred exclusively to js_checkVerificationCode (register context)
-                // so unverified email addresses can never claim a username slot.
+                // ── Check 1: Verify username availability ──────────────────────────
                 const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
                 if (usernameDoc.exists) {
                     callAS3("as_onLoginResult", "error", "Username already exists.", 0, "");
                     return;
                 }
 
-                // Username is free — dispatch a verification code.
-                // js_sendVerificationCode atomically seals the context into _verifyTx.
-                await js_sendVerificationCode(email, user, "register", pass);
+                // ── Check 2: Verify email is not already registered in Auth ───────
+                try {
+                    const methods = await firebase.auth().fetchSignInMethodsForEmail(email.toLowerCase());
+                    if (methods && methods.length > 0) {
+                        callAS3("as_onLoginResult", "error", "Email is already registered. Please login.", 0, "");
+                        return;
+                    }
+                } catch(emailErr) {
+                    console.warn("fetchSignInMethodsForEmail check:", emailErr);
+                }
 
-                // Notify Flash to show the verification code entry screen.
-                // The actual callback (as_onCodeSent) is already fired inside
-                // js_sendVerificationCode, so we don't need to call it again here.
+                // Username & Email are free — dispatch verification code.
+                await js_sendVerificationCode(email, user, "register", pass);
             } catch(e) {
                 console.error("Firebase Register Error:", e);
                 callAS3("as_onLoginResult", "error", e.message || "Registration failed.", 0, "");
