@@ -1095,7 +1095,7 @@
             }
         }
 
-        window.js_saveScore = async function(user, pass, points) {
+        window.js_saveScore = async function(user, points) {
             console.log("JS: Saving Score via Firebase Auth...");
             try {
                 const currentUser = firebase.auth().currentUser;
@@ -1123,7 +1123,7 @@
             }
         }
 
-        window.js_saveCloudData = async function(user, pass, xmlData) {
+        window.js_saveCloudData = async function(user, xmlData) {
             console.log("JS: Saving Cloud XML Data via Firebase Auth...");
             try {
                 const currentUser = firebase.auth().currentUser;
