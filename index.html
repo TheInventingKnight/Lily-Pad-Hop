@@ -715,14 +715,17 @@
             const cleanEmail = (email || "").trim().toLowerCase();
             const cleanUser = (username || "").trim().toLowerCase();
 
-            console.log(`JS: Verification code requested for ${cleanEmail} (${context})`);
+            console.log(`🔍 [VERIFY START] Context: ${context} | Email: "${cleanEmail}" | User: "${cleanUser}"`);
             try {
                 // ── Pre-checks before sending code ───────────────────────────
                 if (context === "register") {
                     // 1. Check username availability
                     if (cleanUser) {
+                        console.log(`🔍 [CHECK 1] Fetching /usernames/${cleanUser}...`);
                         const usernameDoc = await db.collection("usernames").doc(cleanUser).get();
+                        console.log(`🔍 [CHECK 1 RESULT] /usernames/${cleanUser} exists =`, usernameDoc.exists);
                         if (usernameDoc.exists) {
+                            console.log(`⛔ [BLOCKED] Username "${cleanUser}" already exists!`);
                             callAS3("as_onCodeSent", "error", "Username already exists.");
                             return;
                         }
@@ -730,55 +733,69 @@
 
                     // 2. Check email availability in /emails collection
                     if (cleanEmail) {
+                        console.log(`🔍 [CHECK 2] Fetching /emails/${cleanEmail}...`);
                         try {
                             const emailDoc = await db.collection("emails").doc(cleanEmail).get();
+                            console.log(`🔍 [CHECK 2 RESULT] /emails/${cleanEmail} exists =`, emailDoc.exists, emailDoc.exists ? emailDoc.data() : "");
                             if (emailDoc.exists) {
+                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /emails collection!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
                                 return;
                             }
                         } catch(e) {
-                            console.warn("Emails collection check error:", e);
+                            console.warn("⚠️ [CHECK 2 ERROR] /emails collection check failed:", e);
                         }
 
                         // 3. ALSO check Firebase Auth fetchSignInMethodsForEmail
+                        console.log(`🔍 [CHECK 3] Running fetchSignInMethodsForEmail("${cleanEmail}")...`);
                         try {
                             const methods = await firebase.auth().fetchSignInMethodsForEmail(cleanEmail);
+                            console.log(`🔍 [CHECK 3 RESULT] fetchSignInMethodsForEmail returned methods =`, methods);
                             if (methods && methods.length > 0) {
+                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" registered in Firebase Auth!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
                                 return;
                             }
                         } catch(emailErr) {
-                            console.warn("fetchSignInMethodsForEmail check error:", emailErr);
+                            console.warn("⚠️ [CHECK 3 ERROR] fetchSignInMethodsForEmail failed:", emailErr);
                         }
                     }
                 } else if (context === "change_email_pass") {
                     if (cleanEmail) {
+                        console.log(`🔍 [CHECK 2] Fetching /emails/${cleanEmail}...`);
                         try {
                             const emailDoc = await db.collection("emails").doc(cleanEmail).get();
+                            console.log(`🔍 [CHECK 2 RESULT] /emails/${cleanEmail} exists =`, emailDoc.exists);
                             if (emailDoc.exists) {
+                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /emails collection!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
                                 return;
                             }
                         } catch(e) {
-                            console.warn("Emails collection check error:", e);
+                            console.warn("⚠️ [CHECK 2 ERROR] /emails collection check failed:", e);
                         }
 
+                        console.log(`🔍 [CHECK 3] Running fetchSignInMethodsForEmail("${cleanEmail}")...`);
                         try {
                             const methods = await firebase.auth().fetchSignInMethodsForEmail(cleanEmail);
+                            console.log(`🔍 [CHECK 3 RESULT] fetchSignInMethodsForEmail returned methods =`, methods);
                             if (methods && methods.length > 0) {
+                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" registered in Firebase Auth!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
                                 return;
                             }
                         } catch(emailErr) {
-                            console.warn("fetchSignInMethodsForEmail check error:", emailErr);
+                            console.warn("⚠️ [CHECK 3 ERROR] fetchSignInMethodsForEmail failed:", emailErr);
                         }
                     }
                 }
 
+                console.log(`✅ [PRE-CHECKS PASSED] All availability checks passed for "${cleanEmail}". Generating code...`);
+
                 // Generate 6-digit code
                 const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-                // Compute one-way SHA-256 hash of code for storage — raw code is NEVER stored
+                // Compute one-way SHA-256 hash of code for storage
                 const codeHash = await hashVerificationCode(code, cleanEmail, context);
 
                 _verifyTx = {
@@ -790,7 +807,7 @@
                     createdAt: Date.now()
                 };
 
-                console.log(`JS: Dispatching verification code email to ${cleanEmail} (${context})`);
+                console.log(`📧 [DISPATCHING EMAIL] Sending API request to Vercel for "${cleanEmail}"...`);
                 const response = await fetch("https://vercel-emailing.vercel.app/api/send-code", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -798,13 +815,14 @@
                 });
 
                 const resData = await response.json();
+                console.log(`📧 [API RESPONSE] Status: ${response.status}`, resData);
                 if (response.ok) {
                     callAS3("as_onCodeSent", "success", "");
                 } else {
                     callAS3("as_onCodeSent", "error", resData.error || "Failed to send code.");
                 }
             } catch(e) {
-                console.error("Verification code error:", e);
+                console.error("❌ Verification code error:", e);
                 callAS3("as_onCodeSent", "error", "Network error.");
             }
         };
