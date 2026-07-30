@@ -901,6 +901,11 @@
         window.js_register = async function(user, pass, email) {
             console.log("JS: Staging registration for:", user);
             try {
+                if (!pass || pass.length < 6) {
+                    callAS3("as_onLoginResult", "error", "Password must be at least 6 characters long.", 0, "");
+                    return;
+                }
+
                 // ── Phase 1: Staging only — NO Auth write yet ────────────────────────
                 // We only verify username availability here. Account creation is
                 // deferred exclusively to js_checkVerificationCode (register context)
