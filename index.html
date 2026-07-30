@@ -1277,20 +1277,35 @@
                 }
 
                 // Pre-Parse & Sanitize Cloud Save XML.
-                // Only abort if the incoming xmlData was non-empty but sanitizer returned
-                // empty string (meaning a fatal parse error occurred). An empty xmlData
-                // input is a valid save (new account with no progress) and must be allowed through.
                 const sanitizedXml = sanitizeCloudXml(xmlData || "");
+
+                // CRITICAL: Never write an empty xmlData to Firestore.
+                // Flash calls js_saveCloudData("user", "") at the START of a game session
+                // (before any progress is recorded). If we write xmlData:"" here, it will
+                // permanently wipe all of the user's saved passages in the database.
+                //
+                // Rule: only include xmlData in the update when it is genuinely non-empty.
+                // If sanitizedXml is empty, we skip the xmlData field entirely so the
+                // existing saved passages remain completely untouched in Firestore.
                 if (xmlData && xmlData.trim().length > 0 && sanitizedXml.trim().length === 0) {
-                    console.warn("js_saveCloudData Aborted: XML parsing/structure error prevented saving.");
+                    console.warn("js_saveCloudData Aborted: XML sanitizer returned empty for non-empty input. Possible parse error.");
                     return;
                 }
 
-                // Write directly to /users/{currentUser.uid}
-                await db.collection("users").doc(currentUser.uid).update({
-                    xmlData: sanitizedXml,
+                // Build the update object — only include xmlData when there is actual content.
+                const updatePayload = {
                     lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
-                });
+                };
+                if (sanitizedXml && sanitizedXml.trim().length > 0) {
+                    updatePayload.xmlData = sanitizedXml;
+                } else {
+                    // Flash sent empty xmlData (e.g. "Start Hopping" pressed before progress).
+                    // Log and skip — do NOT write xmlData: "" to Firestore.
+                    console.log("js_saveCloudData: Empty xmlData received — skipping xmlData field to preserve existing saved data.");
+                }
+
+                // Write directly to /users/{currentUser.uid}
+                await db.collection("users").doc(currentUser.uid).update(updatePayload);
                 console.log("Cloud Data Saved Successfully for UID:", currentUser.uid);
             } catch(e) {
                 console.error("Firebase Save Cloud Data Error:", e);
