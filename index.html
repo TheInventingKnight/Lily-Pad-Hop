@@ -709,28 +709,22 @@
                         }
                     }
 
-                    // Check email availability in Firebase Auth
+                    // Check email availability via Firestore emails collection
+                    // (fetchSignInMethodsForEmail is unreliable when email
+                    //  enumeration protection is enabled in Firebase Auth)
                     if (email) {
-                        try {
-                            const methods = await firebase.auth().fetchSignInMethodsForEmail(email.toLowerCase());
-                            if (methods && methods.length > 0) {
-                                callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
-                                return;
-                            }
-                        } catch(emailErr) {
-                            console.warn("fetchSignInMethodsForEmail check error:", emailErr);
+                        const emailDoc = await db.collection("emails").doc(email.toLowerCase()).get();
+                        if (emailDoc.exists) {
+                            callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
+                            return;
                         }
                     }
                 } else if (context === "change_email_pass") {
                     if (email) {
-                        try {
-                            const methods = await firebase.auth().fetchSignInMethodsForEmail(email.toLowerCase());
-                            if (methods && methods.length > 0) {
-                                callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
-                                return;
-                            }
-                        } catch(emailErr) {
-                            console.warn("fetchSignInMethodsForEmail check error:", emailErr);
+                        const emailDoc = await db.collection("emails").doc(email.toLowerCase()).get();
+                        if (emailDoc.exists) {
+                            callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
+                            return;
                         }
                     }
                 }
@@ -806,7 +800,9 @@
                     });
                     // 2. Public routing record
                     await db.collection("usernames").doc(tx.username.toLowerCase()).set({ email: tx.email });
-                    // 3. Leaderboard entry
+                    // 3. Email uniqueness index (checked before sending verification code)
+                    await db.collection("emails").doc(tx.email.toLowerCase()).set({ uid: uid });
+                    // 4. Leaderboard entry
                     await db.collection("leaderboard").doc(tx.username.toLowerCase()).set({
                         username: tx.username,
                         points: 0
