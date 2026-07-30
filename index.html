@@ -598,13 +598,11 @@
             });
         });
         
-        // Auto-login / Session Persistence State
-        let autologinUserDoc = null;
-        let isAuthReady = false;
+        let isRegistering = false;
 
         firebase.auth().onAuthStateChanged(async (user) => {
             isAuthReady = true;
-            if (user) {
+            if (user && !isRegistering) {
                 console.log("JS: Auto-login detected for user UID:", user.uid);
                 try {
                     // Direct fetch by UID — works under strict ownership rules
@@ -694,7 +692,6 @@
 
         // ── Helper: Salted SHA-256 Hash for Verification Codes ────────────────
         // Raw verification codes are NEVER stored in memory or logged to console.
-        // Only one-way cryptographic hashes are stored to prevent DevTools inspection.
         async function hashVerificationCode(code, email, context) {
             const cleanCode = (code || "").trim();
             const cleanEmail = (email || "").trim().toLowerCase();
@@ -706,26 +703,20 @@
             return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        // ── Sealed verification transaction ───────────────────────────────────
-        // All verification state is kept inside a single object. Each call to
-        // js_sendVerificationCode atomically replaces the whole object.
         let _verifyTx = null;
 
         window.js_sendVerificationCode = async function(email, username, context, password) {
             const cleanEmail = (email || "").trim().toLowerCase();
             const cleanUser = (username || "").trim().toLowerCase();
 
-            console.log(`🔍 [VERIFY START] Context: ${context} | Email: "${cleanEmail}" | User: "${cleanUser}"`);
+            console.log(`JS: Verification code requested for ${cleanEmail} (${context})`);
             try {
                 // ── Pre-checks before sending code ───────────────────────────
                 if (context === "register") {
                     // 1. Check username availability
                     if (cleanUser) {
-                        console.log(`🔍 [CHECK 1] Fetching /usernames/${cleanUser}...`);
                         const usernameDoc = await db.collection("usernames").doc(cleanUser).get();
-                        console.log(`🔍 [CHECK 1 RESULT] /usernames/${cleanUser} exists =`, usernameDoc.exists);
                         if (usernameDoc.exists) {
-                            console.log(`⛔ [BLOCKED] Username "${cleanUser}" already exists!`);
                             callAS3("as_onCodeSent", "error", "Username already exists.");
                             return;
                         }
@@ -733,12 +724,9 @@
 
                     // 2. Check email availability across ALL accounts via /usernames query
                     if (cleanEmail) {
-                        console.log(`🔍 [CHECK 2] Querying /usernames for email "${cleanEmail}"...`);
                         try {
                             const emailQuery = await db.collection("usernames").where("email", "==", cleanEmail).get();
-                            console.log(`🔍 [CHECK 2 RESULT] /usernames query docs count =`, emailQuery.size);
                             if (!emailQuery.empty) {
-                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /usernames collection!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
                                 return;
                             }
@@ -746,55 +734,46 @@
                             if (rawEmail !== cleanEmail) {
                                 const rawQuery = await db.collection("usernames").where("email", "==", rawEmail).get();
                                 if (!rawQuery.empty) {
-                                    console.log(`⛔ [BLOCKED] Email "${rawEmail}" found in /usernames collection!`);
                                     callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
                                     return;
                                 }
                             }
                         } catch(e) {
-                            console.warn("⚠️ [CHECK 2 ERROR] /usernames email query failed:", e);
+                            console.warn("Usernames email query check error:", e);
                         }
 
                         // 3. Check /emails collection
-                        console.log(`🔍 [CHECK 3] Fetching /emails/${cleanEmail}...`);
                         try {
                             const emailDoc = await db.collection("emails").doc(cleanEmail).get();
-                            console.log(`🔍 [CHECK 3 RESULT] /emails/${cleanEmail} exists =`, emailDoc.exists);
                             if (emailDoc.exists) {
-                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /emails collection!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
                                 return;
                             }
                         } catch(e) {
-                            console.warn("⚠️ [CHECK 3 ERROR] /emails check failed:", e);
+                            console.warn("Emails collection check error:", e);
                         }
 
                         // 4. ALSO check Firebase Auth fetchSignInMethodsForEmail
-                        console.log(`🔍 [CHECK 4] Running fetchSignInMethodsForEmail("${cleanEmail}")...`);
                         try {
                             const methods = await firebase.auth().fetchSignInMethodsForEmail(cleanEmail);
-                            console.log(`🔍 [CHECK 4 RESULT] fetchSignInMethodsForEmail returned methods =`, methods);
                             if (methods && methods.length > 0) {
-                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" registered in Firebase Auth!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
                                 return;
                             }
                         } catch(emailErr) {
-                            console.warn("⚠️ [CHECK 4 ERROR] fetchSignInMethodsForEmail failed:", emailErr);
+                            console.warn("fetchSignInMethodsForEmail check error:", emailErr);
                         }
                     }
                 } else if (context === "change_email_pass") {
                     if (cleanEmail) {
-                        console.log(`🔍 [CHECK 2] Querying /usernames for email "${cleanEmail}"...`);
                         try {
                             const emailQuery = await db.collection("usernames").where("email", "==", cleanEmail).get();
                             if (!emailQuery.empty) {
-                                console.log(`⛔ [BLOCKED] Email "${cleanEmail}" found in /usernames collection!`);
                                 callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
                                 return;
                             }
                         } catch(e) {
-                            console.warn("⚠️ [CHECK 2 ERROR] /usernames email query failed:", e);
+                            console.warn("Usernames email query check error:", e);
                         }
 
                         try {
@@ -804,12 +783,10 @@
                                 return;
                             }
                         } catch(e) {
-                            console.warn("⚠️ [CHECK 3 ERROR] /emails collection check failed:", e);
+                            console.warn("Emails collection check error:", e);
                         }
                     }
                 }
-
-                console.log(`✅ [PRE-CHECKS PASSED] All availability checks passed for "${cleanEmail}". Generating code...`);
 
                 // Generate 6-digit code
                 const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -826,7 +803,6 @@
                     createdAt: Date.now()
                 };
 
-                console.log(`📧 [DISPATCHING EMAIL] Sending API request to Vercel for "${cleanEmail}"...`);
                 const response = await fetch("https://vercel-emailing.vercel.app/api/send-code", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -834,14 +810,13 @@
                 });
 
                 const resData = await response.json();
-                console.log(`📧 [API RESPONSE] Status: ${response.status}`, resData);
                 if (response.ok) {
                     callAS3("as_onCodeSent", "success", "");
                 } else {
                     callAS3("as_onCodeSent", "error", resData.error || "Failed to send code.");
                 }
             } catch(e) {
-                console.error("❌ Verification code error:", e);
+                console.error("Verification code error:", e);
                 callAS3("as_onCodeSent", "error", "Network error.");
             }
         };
@@ -872,6 +847,9 @@
 
             try {
                 if (tx.context === "register") {
+                    // Suppress auto-login while committing registration
+                    isRegistering = true;
+
                     // ── Phase 2 Commit: Auth creation only happens here after email verified ──
                     const userCredential = await firebase.auth().createUserWithEmailAndPassword(tx.email, tx.pass);
                     const uid = userCredential.user.uid;
@@ -896,6 +874,11 @@
                         username: tx.username,
                         points: 0
                     });
+
+                    // Sign out immediately so registration does not auto-login to dashboard
+                    await firebase.auth().signOut();
+                    isRegistering = false;
+
                     callAS3("as_onCodeVerified", "success_register", "");
 
                 } else if (tx.context === "recover") {
