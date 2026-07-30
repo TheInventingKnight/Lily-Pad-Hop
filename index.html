@@ -693,16 +693,10 @@
         window.js_login = async function(user, pass) {
             console.log("JS: Logging in via Firebase Auth...");
             try {
-                // Ensure auth session exists for protected Firestore lookup.
-                // CRITICAL: Only sign in anonymously if there is NO current session at all.
-                // Calling signInAnonymously() while a real user is signed in would replace
-                // their persisted session with an anonymous one, breaking data persistence.
-                const currentAuthUser = firebase.auth().currentUser;
-                if (!currentAuthUser) {
-                    try { await firebase.auth().signInAnonymously(); } catch(e) {}
-                }
-
-                // Phase 1: Lookup email for username
+                // Phase 1: Lookup email for username.
+                // /usernames/{username} is publicly readable (GET only, listing disabled),
+                // so no anonymous auth token is required here. Anonymous auth was removed
+                // because it was fragile — hangs/failures broke login for all users.
                 const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
 
                 if (usernameDoc.exists && usernameDoc.data().email) {
@@ -785,12 +779,10 @@
 
             console.log(`JS: Verification code requested for ${cleanEmail} (${context})`);
             try {
-                // Ensure auth session exists for protected Firestore lookups.
-                // Only sign in anonymously if there is NO current user at all — never
-                // replace an existing real user session with an anonymous one.
-                if (!firebase.auth().currentUser) {
-                    try { await firebase.auth().signInAnonymously(); } catch(e) {}
-                }
+                // No anonymous auth needed here: /usernames/ GET is public, /emails/ GET
+                // is public, and the username availability list-query is blocked by rules
+                // (always caught and swallowed). Anonymous auth was removed because it was
+                // fragile and caused silent login failures across all users.
 
                 // ── Pre-checks before sending code ───────────────────────────
                 if (context === "register") {
@@ -1138,12 +1130,7 @@
         window.js_forgotPassword = async function(user) {
             console.log("JS: Forgot Password recovery initiated for user:", user);
             try {
-                // Ensure auth session exists for protected Firestore lookup.
-                // Only sign in anonymously if there is truly no current user — never
-                // replace an existing real user session with an anonymous one.
-                if (!firebase.auth().currentUser) {
-                    try { await firebase.auth().signInAnonymously(); } catch(e) {}
-                }
+                // No anonymous auth needed: /usernames/{username} GET is publicly readable.
 
                 // Look up email from the public /usernames/ routing collection
                 const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
@@ -1172,11 +1159,7 @@
                 }
 
                 // ── Guard: Ensure username is not already claimed by an existing account ──
-                // Only sign in anonymously if there is truly no current user — never
-                // replace an existing real user session with an anonymous one.
-                if (!firebase.auth().currentUser) {
-                    try { await firebase.auth().signInAnonymously(); } catch(e) {}
-                }
+                // /usernames/ and /emails/ GET are publicly readable — no anonymous auth needed.
 
                 const usernameDoc = await db.collection("usernames").doc(cleanUser).get();
                 if (usernameDoc.exists) {
