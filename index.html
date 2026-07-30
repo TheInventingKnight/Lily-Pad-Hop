@@ -627,34 +627,39 @@
             if (!xmlString || typeof xmlString !== "string" || xmlString.trim().length === 0) {
                 return "";
             }
+
+            // Fix unescaped ampersands in saved verse text before parsing
+            let cleanXml = xmlString.replace(/&(?!(amp|lt|gt|quot|apos);)/g, "&amp;");
+
             try {
                 const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(xmlString, "text/xml");
+                const xmlDoc = parser.parseFromString(cleanXml, "text/xml");
 
                 // Check for XML parsing errors
                 const parserErrors = xmlDoc.getElementsByTagName("parsererror");
                 if (parserErrors.length > 0) {
-                    console.warn("Cloud XML Sanitization: Invalid XML structure detected.");
-                    return "";
+                    console.warn("Cloud XML Sanitization: Parser error encountered. Using string fallback to preserve user data.");
+                    return xmlString.trim(); // Safe fallback to avoid wiping user data
                 }
 
-                // Validate root element node
                 const rootElement = xmlDoc.documentElement;
                 if (!rootElement || !rootElement.nodeName) {
-                    console.warn("Cloud XML Sanitization: Missing root element.");
-                    return "";
+                    return xmlString.trim();
                 }
 
+                // Expanded allowed root tags for ActionScript save structures
                 const rootName = rootElement.nodeName.toLowerCase();
-                if (!["mygroup_data", "data", "xml", "save"].includes(rootName)) {
-                    console.warn("Cloud XML Sanitization: Unexpected root element tag:", rootName);
-                    return "";
+                const allowedRoots = ["mygroup_data", "users", "user", "userdata", "lilypadhop", "data", "xml", "save", "progress", "passages"];
+
+                if (!allowedRoots.includes(rootName)) {
+                    console.warn("Cloud XML Sanitization: Non-standard root element tag:", rootName, "- preserving XML.");
+                    return cleanXml;
                 }
 
-                return xmlString;
+                return cleanXml;
             } catch(e) {
                 console.error("Cloud XML Sanitization Error:", e);
-                return "";
+                return xmlString; // Preserve user data if an exception occurs
             }
         }
 
@@ -699,10 +704,35 @@
                         // Index email into /emails collection if not already indexed
                         db.collection("emails").doc(email.toLowerCase()).set({ uid: userCredential.user.uid }).catch(() => {});
 
-                        // Phase 2: Fetch private profile by UID — protected by ownership rule
-                        const privateDoc = await db.collection("users").doc(userCredential.user.uid).get();
-                        if (privateDoc.exists) {
-                            const data = privateDoc.data();
+                        // Phase 2: Fetch private profile by UID — with fallback for legacy username documents
+                        let privateDoc = await db.collection("users").doc(userCredential.user.uid).get();
+                        let data = privateDoc.exists ? privateDoc.data() : null;
+
+                        // Legacy migration check: If xmlData is missing on the UID doc, check the old username document
+                        if (!data || !data.xmlData) {
+                            try {
+                                const legacyDoc = await db.collection("users").doc(user.toLowerCase()).get();
+                                if (legacyDoc.exists && legacyDoc.data().xmlData) {
+                                    const legacyXml = legacyDoc.data().xmlData;
+                                    data = data || {};
+                                    data.xmlData = legacyXml;
+                                    if (!data.username) data.username = legacyDoc.data().username || user;
+                                    if (!data.points && legacyDoc.data().points) data.points = legacyDoc.data().points;
+
+                                    // Auto-migrate legacy xmlData to the new UID document
+                                    db.collection("users").doc(userCredential.user.uid).set({
+                                        username: data.username,
+                                        email: email,
+                                        points: Number(data.points) || 0,
+                                        xmlData: legacyXml
+                                    }, { merge: true }).catch(() => {});
+                                }
+                            } catch(legacyErr) {
+                                console.warn("Legacy user doc migration check notice:", legacyErr);
+                            }
+                        }
+
+                        if (data) {
                             const safeXml = sanitizeCloudXml(data.xmlData || "");
                             callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, safeXml, data.email || "");
                         } else {
