@@ -622,10 +622,47 @@
             }
         });
 
+        // --- Cloud XML Pre-Parsing & Sanitization ---
+        function sanitizeCloudXml(xmlString) {
+            if (!xmlString || typeof xmlString !== "string" || xmlString.trim().length === 0) {
+                return "";
+            }
+            try {
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xmlString, "text/xml");
+
+                // Check for XML parsing errors
+                const parserErrors = xmlDoc.getElementsByTagName("parsererror");
+                if (parserErrors.length > 0) {
+                    console.warn("Cloud XML Sanitization: Invalid XML structure detected.");
+                    return "";
+                }
+
+                // Validate root element node
+                const rootElement = xmlDoc.documentElement;
+                if (!rootElement || !rootElement.nodeName) {
+                    console.warn("Cloud XML Sanitization: Missing root element.");
+                    return "";
+                }
+
+                const rootName = rootElement.nodeName.toLowerCase();
+                if (!["mygroup_data", "data", "xml", "save"].includes(rootName)) {
+                    console.warn("Cloud XML Sanitization: Unexpected root element tag:", rootName);
+                    return "";
+                }
+
+                return xmlString;
+            } catch(e) {
+                console.error("Cloud XML Sanitization Error:", e);
+                return "";
+            }
+        }
+
         function triggerAutoLoginIfReady() {
             if (autologinUserDoc && rufflePlayerInstance) {
                 console.log("JS: Auto-logging into SWF for user:", autologinUserDoc.username);
-                callAS3("as_onLoginResult", "success", autologinUserDoc.username, Number(autologinUserDoc.points) || 0, autologinUserDoc.xmlData || "", autologinUserDoc.email || "");
+                const safeXml = sanitizeCloudXml(autologinUserDoc.xmlData || "");
+                callAS3("as_onLoginResult", "success", autologinUserDoc.username, Number(autologinUserDoc.points) || 0, safeXml, autologinUserDoc.email || "");
             }
         }
         
@@ -661,7 +698,8 @@
                         const privateDoc = await db.collection("users").doc(userCredential.user.uid).get();
                         if (privateDoc.exists) {
                             const data = privateDoc.data();
-                            callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, data.xmlData || "", data.email || "");
+                            const safeXml = sanitizeCloudXml(data.xmlData || "");
+                            callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, safeXml, data.email || "");
                         } else {
                             callAS3("as_onLoginResult", "error", "Account data not found. Please contact support.", 0, "");
                         }
@@ -788,8 +826,10 @@
                     }
                 }
 
-                // Generate 6-digit code
-                const code = Math.floor(100000 + Math.random() * 900000).toString();
+                // Generate 6-digit code using cryptographically secure random values
+                const codeArray = new Uint32Array(1);
+                window.crypto.getRandomValues(codeArray);
+                const code = (100000 + (codeArray[0] % 900000)).toString();
 
                 // Compute one-way SHA-256 hash of code for storage
                 const codeHash = await hashVerificationCode(code, cleanEmail, context);
@@ -800,7 +840,8 @@
                     username: cleanUser,
                     pass: password || "",
                     context: context,
-                    createdAt: Date.now()
+                    createdAt: Date.now(),
+                    attempts: 0
                 };
 
                 const response = await fetch("https://vercel-emailing.vercel.app/api/send-code", {
@@ -823,7 +864,12 @@
 
         // Peer-level function — NOT nested inside js_sendVerificationCode
         window.js_checkVerificationCode = async function(enteredCode) {
-            console.log("JS: Verifying entered code...");
+            console.log("JS: Verifying code via Cloudflare Worker endpoint...");
+
+            if (!enteredCode || typeof enteredCode !== "string" || enteredCode.trim().length === 0) {
+                callAS3("as_onCodeVerified", "error", "Please enter a verification code.");
+                return;
+            }
 
             // Guard: reject if no pending transaction exists
             if (!_verifyTx) {
@@ -831,108 +877,131 @@
                 return;
             }
 
-            // Snapshot current transaction
-            const tx = _verifyTx;
-
-            // Verify entered code via SHA-256 hash comparison
-            const enteredHash = await hashVerificationCode(enteredCode, tx.email, tx.context);
-
-            if (enteredHash !== tx.codeHash) {
-                callAS3("as_onCodeVerified", "error", "Invalid verification code.");
-                return;
-            }
-
-            // Consume transaction immediately — prevents replay attacks
-            _verifyTx = null;
-
             try {
-                if (tx.context === "register") {
-                    // Suppress auto-login while committing registration
-                    isRegistering = true;
+                const workerBase = (typeof NIV_WORKER_URL !== "undefined" && NIV_WORKER_URL)
+                    ? NIV_WORKER_URL.replace(/\?.*$/, "").replace(/\/+$/, "")
+                    : "https://cloudflare-worker.mattproductions16.workers.dev";
+                const workerUrl = workerBase + "/verify-code";
 
-                    // ── Phase 2 Commit: Auth creation only happens here after email verified ──
-                    const userCredential = await firebase.auth().createUserWithEmailAndPassword(tx.email, tx.pass);
-                    const uid = userCredential.user.uid;
+                // Send the entered code AND the stored hash to the worker.
+                // The worker recomputes the salted SHA-256 hash server-side and compares,
+                // so the raw code is validated without a client-side fallback path.
+                const response = await fetch(workerUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        code:     enteredCode.trim(),
+                        codeHash: _verifyTx.codeHash,
+                        email:    _verifyTx.email,
+                        context:  _verifyTx.context
+                    })
+                });
 
-                    // Seed the in-memory password cache immediately
-                    tempLoginPass = tx.pass;
+                const data = await response.json();
 
-                    // 1. Private profile
-                    await db.collection("users").doc(uid).set({
-                        username: tx.username,
-                        email: tx.email,
-                        points: 0,
-                        xmlData: "",
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                    });
-                    // 2. Public routing record
-                    await db.collection("usernames").doc(tx.username.toLowerCase()).set({ email: tx.email });
-                    // 3. Email uniqueness index
-                    await db.collection("emails").doc(tx.email.toLowerCase()).set({ uid: uid });
-                    // 4. Leaderboard entry
-                    await db.collection("leaderboard").doc(tx.username.toLowerCase()).set({
-                        username: tx.username,
-                        points: 0
-                    });
+                if (!response.ok || !data.valid) {
+                    callAS3("as_onCodeVerified", "error", data.message || "Invalid verification code.");
+                    return;
+                }
 
-                    // Sign out immediately so registration does not auto-login to dashboard
-                    await firebase.auth().signOut();
-                    isRegistering = false;
+                // Code verified by Cloudflare Worker -> consume pending transaction context
+                if (_verifyTx) {
+                    const tx = _verifyTx;
+                    _verifyTx = null;
 
-                    callAS3("as_onCodeVerified", "success_register", "");
+                    if (tx.context === "register") {
+                        // Suppress auto-login while committing registration
+                        isRegistering = true;
 
-                } else if (tx.context === "recover") {
-                    const usernameDoc = await db.collection("usernames").doc(tx.username.toLowerCase()).get();
-                    const recoveryEmail = (usernameDoc.exists && usernameDoc.data().email)
-                        ? usernameDoc.data().email
-                        : tx.email;
-                    await firebase.auth().sendPasswordResetEmail(recoveryEmail);
-                    callAS3("as_onCodeVerified", "success_recover", "Recovery email successfully sent!");
+                        // ── Phase 2 Commit: Auth creation only happens here after email verified ──
+                        const userCredential = await firebase.auth().createUserWithEmailAndPassword(tx.email, tx.pass);
+                        const uid = userCredential.user.uid;
 
-                } else if (tx.context === "change_email_pass") {
-                    const currentUser = firebase.auth().currentUser;
-                    if (!currentUser) {
-                        callAS3("as_onCodeVerified", "error", "No active session found.");
-                        return;
-                    }
+                        // Seed the in-memory password cache immediately
+                        tempLoginPass = tx.pass;
 
-                    // ── Guard: tempLoginPass is empty on auto-login sessions ──────────────
-                    // In the change_email_pass context, tx.pass carries the NEW password,
-                    // so we cannot use it for the re-auth credential. If tempLoginPass is
-                    // absent the session is too stale to update safely — tell the user.
-                    if (!tempLoginPass) {
-                        callAS3("as_onCodeVerified", "error",
-                            "Authentication expired. Please log out and log back in before changing your settings.");
-                        return;
-                    }
+                        // Step 1: Write /users/{uid} FIRST — must be committed before /usernames
+                        // because Firestore security rules for /usernames look up /users/{uid}
+                        // to verify ownership. Each await guarantees the previous write completed.
+                        await db.collection("users").doc(uid).set({
+                            username: tx.username,
+                            email: tx.email,
+                            points: 0,
+                            xmlData: "",
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
 
-                    // ── Silent re-authentication to satisfy Firebase's recent-login policy ──
-                    const credential = firebase.auth.EmailAuthProvider.credential(
-                        currentUser.email,
-                        tempLoginPass
-                    );
-                    await currentUser.reauthenticateWithCredential(credential);
-
-                    // Credentials are fresh — safe to update sensitive fields
-                    if (tx.email) {
-                        await currentUser.updateEmail(tx.email);
-                    }
-                    if (tx.pass) {
-                        await currentUser.updatePassword(tx.pass);
-                        tempLoginPass = tx.pass; // Keep in-memory cache in sync
-                    }
-
-                    // 1. Update private profile
-                    const uidUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
-                    if (tx.email) uidUpdates.email = tx.email;
-                    await db.collection("users").doc(currentUser.uid).update(uidUpdates);
-
-                    // 2. Update public routing record if email changed
-                    if (tx.email) {
+                        // Step 2: /users/{uid} is now committed — safe to write /usernames
                         await db.collection("usernames").doc(tx.username.toLowerCase()).set({ email: tx.email });
-                        callAS3("as_onEmailSet", tx.email);
+
+                        // Step 3: Email uniqueness index
+                        await db.collection("emails").doc(tx.email.toLowerCase()).set({ uid: uid });
+
+                        // Step 4: Leaderboard entry
+                        await db.collection("leaderboard").doc(tx.username.toLowerCase()).set({
+                            username: tx.username,
+                            points: 0
+                        });
+
+                        // Sign out immediately so registration does not auto-login to dashboard
+                        await firebase.auth().signOut();
+                        isRegistering = false;
+
+                        callAS3("as_onCodeVerified", "success_register", "");
+
+                    } else if (tx.context === "recover") {
+                        const usernameDoc = await db.collection("usernames").doc(tx.username.toLowerCase()).get();
+                        const recoveryEmail = (usernameDoc.exists && usernameDoc.data().email)
+                            ? usernameDoc.data().email
+                            : tx.email;
+                        await firebase.auth().sendPasswordResetEmail(recoveryEmail);
+                        callAS3("as_onCodeVerified", "success_recover", "Recovery email successfully sent!");
+
+                    } else if (tx.context === "change_email_pass") {
+                        const currentUser = firebase.auth().currentUser;
+                        if (!currentUser) {
+                            callAS3("as_onCodeVerified", "error", "No active session found.");
+                            return;
+                        }
+
+                        // ── Guard: tempLoginPass is empty on auto-login sessions ──────────────
+                        // In the change_email_pass context, tx.pass carries the NEW password,
+                        // so we cannot use it for the re-auth credential. If tempLoginPass is
+                        // absent the session is too stale to update safely — tell the user.
+                        if (!tempLoginPass) {
+                            callAS3("as_onCodeVerified", "error",
+                                "Authentication expired. Please log out and log back in before changing your settings.");
+                            return;
+                        }
+
+                        // ── Silent re-authentication to satisfy Firebase's recent-login policy ──
+                        const credential = firebase.auth.EmailAuthProvider.credential(
+                            currentUser.email,
+                            tempLoginPass
+                        );
+                        await currentUser.reauthenticateWithCredential(credential);
+
+                        // Credentials are fresh — safe to update sensitive fields
+                        if (tx.email) {
+                            await currentUser.updateEmail(tx.email);
+                        }
+                        if (tx.pass) {
+                            await currentUser.updatePassword(tx.pass);
+                            tempLoginPass = tx.pass; // Keep in-memory cache in sync
+                        }
+
+                        // 1. Update private profile
+                        const uidUpdates = { lastUpdated: firebase.firestore.FieldValue.serverTimestamp() };
+                        if (tx.email) uidUpdates.email = tx.email;
+                        await db.collection("users").doc(currentUser.uid).update(uidUpdates);
+
+                        // 2. Update public routing record if email changed
+                        if (tx.email) {
+                            await db.collection("usernames").doc(tx.username.toLowerCase()).set({ email: tx.email });
+                            callAS3("as_onEmailSet", tx.email);
+                        }
+                        callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
                     }
-                    callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
                 }
             } catch(e) {
                 console.error("Authentication/Firestore verification error:", e);
@@ -1062,7 +1131,9 @@
                 // Create an Auth account for this legacy user
                 let uid;
                 try {
-                    const tempPass = Math.random().toString(36).substring(2, 12) + "A1!";
+                    const passBytes = new Uint8Array(8);
+                    window.crypto.getRandomValues(passBytes);
+                    const tempPass = Array.from(passBytes, b => b.toString(36)).join('').substring(0, 10) + "A1!";
                     const userCredential = await firebase.auth().createUserWithEmailAndPassword(email, tempPass);
                     uid = userCredential.user.uid;
                 } catch(createErr) {
@@ -1095,52 +1166,69 @@
             }
         }
 
-        window.js_saveScore = async function(user, points) {
-            console.log("JS: Saving Score via Firebase Auth...");
+        window.js_saveScore = async function(flashUser, points) {
+            console.log("JS: Saving Score via Firebase Auth (ignoring ActionScript user parameter)...");
             try {
+                // Completely IGNORE flashUser parameter passed from ActionScript
                 const currentUser = firebase.auth().currentUser;
                 if (!currentUser) {
-                    console.error("Auth Error: No user currently signed in.");
+                    console.warn("js_saveScore Aborted: No authenticated user signed in.");
                     return;
                 }
+
                 const pointsToAdd = Number(points);
                 if (isNaN(pointsToAdd) || pointsToAdd <= 0) return;
 
-                // Atomic server-side increment — cannot be tampered with from the client console
+                // Atomic server-side update on /users/{currentUser.uid}
                 await db.collection("users").doc(currentUser.uid).update({
                     points: firebase.firestore.FieldValue.increment(pointsToAdd),
                     lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
                 });
 
-                // Mirror the increment atomically on the leaderboard too
-                await db.collection("leaderboard").doc(user.toLowerCase()).update({
-                    points: firebase.firestore.FieldValue.increment(pointsToAdd)
-                });
+                // Fetch user's stored profile to update leaderboard with authenticated username
+                const userDoc = await db.collection("users").doc(currentUser.uid).get();
+                if (userDoc.exists) {
+                    const authUsername = userDoc.data().username;
+                    if (authUsername) {
+                        await db.collection("leaderboard").doc(authUsername.toLowerCase()).update({
+                            points: firebase.firestore.FieldValue.increment(pointsToAdd)
+                        }).catch(() => {});
+                    }
+                }
 
-                console.log(`Score Saved: +${pointsToAdd} points`);
+                console.log(`Score Saved for UID ${currentUser.uid}: +${pointsToAdd} points`);
             } catch(e) {
                 console.error("Firebase Save Score Error:", e);
             }
-        }
+        };
 
-        window.js_saveCloudData = async function(user, xmlData) {
-            console.log("JS: Saving Cloud XML Data via Firebase Auth...");
+        window.js_saveCloudData = async function(flashUser, xmlData) {
+            console.log("JS: Saving Cloud XML Data via Firebase Auth (ignoring ActionScript user parameter)...");
             try {
+                // Completely IGNORE flashUser parameter passed from ActionScript
                 const currentUser = firebase.auth().currentUser;
                 if (!currentUser) {
-                    console.error("Auth Error: No user currently signed in.");
+                    console.warn("js_saveCloudData Aborted: No authenticated user signed in.");
                     return;
                 }
-                // Write directly to /users/{uid} — ownership enforced by Firestore rules
+
+                // Pre-Parse & Sanitize Cloud Save XML
+                const sanitizedXml = sanitizeCloudXml(xmlData);
+                if (xmlData && !sanitizedXml) {
+                    console.warn("js_saveCloudData Aborted: XML parsing/structure error.");
+                    return;
+                }
+
+                // Write directly to /users/{currentUser.uid}
                 await db.collection("users").doc(currentUser.uid).update({
-                    xmlData: xmlData,
+                    xmlData: sanitizedXml,
                     lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
                 });
-                console.log("Cloud Data Saved Successfully");
+                console.log("Cloud Data Saved Successfully for UID:", currentUser.uid);
             } catch(e) {
                 console.error("Firebase Save Cloud Data Error:", e);
             }
-        }
+        };
 
         window.js_fetchNivVerse = async function(ref) {
             console.log("JS: Fetching NIV passage via worker:", ref);
