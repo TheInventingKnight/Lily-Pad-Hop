@@ -1266,10 +1266,20 @@
             }
         };
 
-        window.js_saveCloudData = async function(flashUser, xmlData) {
-            console.log("JS: Saving Cloud XML Data via Firebase Auth (ignoring ActionScript user parameter)...");
+        window.js_saveCloudData = async function(flashUser, arg2, arg3) {
+            console.log("JS: Saving Cloud XML Data via Firebase Auth (ignoring ActionScript user/pass parameters)...");
+            // SaveData.as calls: js_saveCloudData(currentUser, currentPass, xmlString)  — 3 args
+            // LoadData.as calls: js_saveCloudData(currentUser, xmlData)                 — 2 args
+            //
+            // To support both without recompiling the SWF, we detect which convention is
+            // being used: if a 3rd argument is present (and is a string), it is the real
+            // XML data. Otherwise arg2 is the XML data. The password argument (when present)
+            // is always silently discarded — we never use it for anything.
+            const xmlData = (arg3 !== undefined && arg3 !== null) ? String(arg3) : String(arg2 || "");
+
             try {
-                // Completely IGNORE flashUser parameter passed from ActionScript
+                // Completely IGNORE flashUser and any password passed from ActionScript.
+                // Identity is determined solely by firebase.auth().currentUser.
                 const currentUser = firebase.auth().currentUser;
                 if (!currentUser) {
                     console.warn("js_saveCloudData Aborted: No authenticated user signed in.");
@@ -1277,30 +1287,28 @@
                 }
 
                 // Pre-Parse & Sanitize Cloud Save XML.
-                const sanitizedXml = sanitizeCloudXml(xmlData || "");
+                const sanitizedXml = sanitizeCloudXml(xmlData);
 
                 // CRITICAL: Never write an empty xmlData to Firestore.
-                // Flash calls js_saveCloudData("user", "") at the START of a game session
-                // (before any progress is recorded). If we write xmlData:"" here, it will
+                // Flash calls js_saveCloudData with an empty XML string at the START of a
+                // game session (before any progress is recorded). Writing xmlData:"" would
                 // permanently wipe all of the user's saved passages in the database.
                 //
                 // Rule: only include xmlData in the update when it is genuinely non-empty.
-                // If sanitizedXml is empty, we skip the xmlData field entirely so the
-                // existing saved passages remain completely untouched in Firestore.
                 if (xmlData && xmlData.trim().length > 0 && sanitizedXml.trim().length === 0) {
                     console.warn("js_saveCloudData Aborted: XML sanitizer returned empty for non-empty input. Possible parse error.");
                     return;
                 }
 
-                // Build the update object — only include xmlData when there is actual content.
+                // Build the update payload — only write xmlData when there is actual content.
                 const updatePayload = {
                     lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
                 };
                 if (sanitizedXml && sanitizedXml.trim().length > 0) {
                     updatePayload.xmlData = sanitizedXml;
+                    console.log("js_saveCloudData: Writing xmlData to Firestore, length:", sanitizedXml.length);
                 } else {
-                    // Flash sent empty xmlData (e.g. "Start Hopping" pressed before progress).
-                    // Log and skip — do NOT write xmlData: "" to Firestore.
+                    // Empty XML — skip the xmlData field entirely to preserve existing saves.
                     console.log("js_saveCloudData: Empty xmlData received — skipping xmlData field to preserve existing saved data.");
                 }
 
