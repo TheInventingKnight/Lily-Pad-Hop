@@ -701,9 +701,28 @@
 
                 if (usernameDoc.exists && usernameDoc.data().email) {
                     const email = usernameDoc.data().email;
+                    const authEmail = usernameDoc.data().authEmail;
                     try {
-                        const userCredential = await firebase.auth().signInWithEmailAndPassword(email, pass);
+                        let userCredential;
+                        try {
+                            userCredential = await firebase.auth().signInWithEmailAndPassword(email, pass);
+                        } catch(primaryAuthErr) {
+                            // If primary email fails (e.g. pending link verification in Auth), try authEmail
+                            if (authEmail && authEmail.toLowerCase() !== email.toLowerCase() && 
+                                (primaryAuthErr.code === "auth/user-not-found" || primaryAuthErr.code === "auth/invalid-credential" || primaryAuthErr.code === "auth/invalid-email")) {
+                                userCredential = await firebase.auth().signInWithEmailAndPassword(authEmail, pass);
+                            } else {
+                                throw primaryAuthErr;
+                            }
+                        }
                         tempLoginPass = pass;
+
+                        // If user signed in and Auth email matches new email, clean up authEmail field in /usernames doc
+                        if (userCredential && userCredential.user && userCredential.user.email && userCredential.user.email.toLowerCase() === email.toLowerCase() && authEmail) {
+                            db.collection("usernames").doc(user.toLowerCase()).update({
+                                authEmail: firebase.firestore.FieldValue.delete()
+                            }).catch(() => {});
+                        }
 
                         // Index email into /emails collection if not already indexed
                         db.collection("emails").doc(email.toLowerCase()).set({ uid: userCredential.user.uid }).catch(() => {});
@@ -997,30 +1016,43 @@
                             return;
                         }
 
-                        // ── Guard: tempLoginPass is empty on auto-login sessions ──────────────
-                        // In the change_email_pass context, tx.pass carries the NEW password,
-                        // so we cannot use it for the re-auth credential. If tempLoginPass is
-                        // absent the session is too stale to update safely — tell the user.
-                        if (!tempLoginPass) {
+                        // ── Password resolution for re-authentication ───────────────────────
+                        // Use the password typed by the user in the Change Email screen (tx.pass),
+                        // or fall back to tempLoginPass. This ensures auto-logged in sessions can
+                        // successfully re-authenticate without requiring a fresh login.
+                        const authPassword = (tx.pass && tx.pass.trim()) ? tx.pass.trim() : tempLoginPass;
+                        if (!authPassword) {
                             callAS3("as_onCodeVerified", "error",
-                                "Authentication expired. Please log out and log back in before changing your settings.");
+                                "Please enter your current password to confirm email change.");
                             return;
                         }
 
                         // ── Silent re-authentication to satisfy Firebase's recent-login policy ──
                         const credential = firebase.auth.EmailAuthProvider.credential(
                             currentUser.email,
-                            tempLoginPass
+                            authPassword
                         );
                         await currentUser.reauthenticateWithCredential(credential);
+                        tempLoginPass = authPassword; // Cache valid password for session
 
                         // Credentials are fresh — safe to update sensitive fields
+                        let verifySent = false;
                         if (tx.email) {
-                            await currentUser.updateEmail(tx.email);
-                        }
-                        if (tx.pass) {
-                            await currentUser.updatePassword(tx.pass);
-                            tempLoginPass = tx.pass; // Keep in-memory cache in sync
+                            try {
+                                await currentUser.updateEmail(tx.email);
+                            } catch(emailErr) {
+                                console.warn("updateEmail notice:", emailErr);
+                                if (emailErr.code === "auth/operation-not-allowed" || (emailErr.message && emailErr.message.toLowerCase().includes("verify"))) {
+                                    if (typeof currentUser.verifyBeforeUpdateEmail === "function") {
+                                        await currentUser.verifyBeforeUpdateEmail(tx.email);
+                                        verifySent = true;
+                                    } else {
+                                        throw emailErr;
+                                    }
+                                } else {
+                                    throw emailErr;
+                                }
+                            }
                         }
 
                         // 1. Update private profile
@@ -1033,10 +1065,19 @@
                         if (tx.email) {
                             const userDoc = await db.collection("users").doc(currentUser.uid).get();
                             const actualUsername = (userDoc.exists && userDoc.data().username) ? userDoc.data().username : tx.username;
-                            await db.collection("usernames").doc(actualUsername.toLowerCase()).set({ email: tx.email });
+                            const usernamePayload = { email: tx.email };
+                            if (currentUser.email && currentUser.email.toLowerCase() !== tx.email.toLowerCase()) {
+                                usernamePayload.authEmail = currentUser.email.toLowerCase();
+                            }
+                            await db.collection("usernames").doc(actualUsername.toLowerCase()).set(usernamePayload, { merge: true });
+                            await db.collection("emails").doc(tx.email.toLowerCase()).set({ uid: currentUser.uid });
                             callAS3("as_onEmailSet", tx.email);
                         }
-                        callAS3("as_onCodeVerified", "success_settings", "Settings successfully updated!");
+
+                        const statusMsg = verifySent
+                            ? "Settings updated! A verification link has also been sent to your new email."
+                            : "Settings successfully updated!";
+                        callAS3("as_onCodeVerified", "success_settings", statusMsg);
                     }
                 }
             } catch(e) {
@@ -1078,11 +1119,31 @@
                 const actualUsername = (userDoc.exists && userDoc.data().username) ? userDoc.data().username : user;
 
                 // Update email in Auth and Firestore if requested
-                if (newEmail && newEmail !== currentUser.email) {
-                    await currentUser.updateEmail(newEmail);
+                if (newEmail && newEmail.toLowerCase() !== (currentUser.email || "").toLowerCase()) {
+                    let verifySent = false;
+                    try {
+                        await currentUser.updateEmail(newEmail);
+                    } catch(emailErr) {
+                        console.warn("updateEmail notice in js_updateSettings:", emailErr);
+                        if (emailErr.code === "auth/operation-not-allowed" || (emailErr.message && emailErr.message.toLowerCase().includes("verify"))) {
+                            if (typeof currentUser.verifyBeforeUpdateEmail === "function") {
+                                await currentUser.verifyBeforeUpdateEmail(newEmail);
+                                verifySent = true;
+                            } else {
+                                throw emailErr;
+                            }
+                        } else {
+                            throw emailErr;
+                        }
+                    }
                     firestoreUpdates.email = newEmail;
                     // Keep public routing record in sync using verified username
-                    await db.collection("usernames").doc(actualUsername.toLowerCase()).set({ email: newEmail });
+                    const usernamePayload = { email: newEmail };
+                    if (currentUser.email && currentUser.email.toLowerCase() !== newEmail.toLowerCase()) {
+                        usernamePayload.authEmail = currentUser.email.toLowerCase();
+                    }
+                    await db.collection("usernames").doc(actualUsername.toLowerCase()).set(usernamePayload, { merge: true });
+                    await db.collection("emails").doc(newEmail.toLowerCase()).set({ uid: currentUser.uid });
                     callAS3("as_onEmailSet", newEmail);
                 }
 
