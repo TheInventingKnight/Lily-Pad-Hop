@@ -858,11 +858,18 @@
                     }
                 } else if (context === "change_email_pass") {
                     if (cleanEmail) {
+                        const currentUser = firebase.auth().currentUser;
                         try {
                             const emailQuery = await db.collection("usernames").where("email", "==", cleanEmail).get();
                             if (!emailQuery.empty) {
-                                callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
-                                return;
+                                // Ignore if the document belongs to the user's own username
+                                const userDoc = currentUser ? await db.collection("users").doc(currentUser.uid).get() : null;
+                                const ownUsername = (userDoc && userDoc.exists && userDoc.data().username) ? userDoc.data().username.toLowerCase() : cleanUser;
+                                const isDifferentUser = emailQuery.docs.some(doc => doc.id.toLowerCase() !== ownUsername);
+                                if (isDifferentUser) {
+                                    callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
+                                    return;
+                                }
                             }
                         } catch(e) {
                             console.warn("Usernames email query check error:", e);
@@ -871,8 +878,11 @@
                         try {
                             const emailDoc = await db.collection("emails").doc(cleanEmail).get();
                             if (emailDoc.exists) {
-                                callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
-                                return;
+                                // Allow if the email doc belongs to current user's own UID
+                                if (!currentUser || emailDoc.data().uid !== currentUser.uid) {
+                                    callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
+                                    return;
+                                }
                             }
                         } catch(e) {
                             console.warn("Emails collection check error:", e);
@@ -1065,12 +1075,29 @@
                         if (tx.email) {
                             const userDoc = await db.collection("users").doc(currentUser.uid).get();
                             const actualUsername = (userDoc.exists && userDoc.data().username) ? userDoc.data().username : tx.username;
+                            const oldEmail = (userDoc.exists && userDoc.data().email) ? userDoc.data().email.toLowerCase() : (currentUser.email ? currentUser.email.toLowerCase() : "");
+                            const newEmailClean = tx.email.toLowerCase();
+
                             const usernamePayload = { email: tx.email };
-                            if (currentUser.email && currentUser.email.toLowerCase() !== tx.email.toLowerCase()) {
+                            if (currentUser.email && currentUser.email.toLowerCase() !== newEmailClean) {
                                 usernamePayload.authEmail = currentUser.email.toLowerCase();
                             }
                             await db.collection("usernames").doc(actualUsername.toLowerCase()).set(usernamePayload, { merge: true });
-                            await db.collection("emails").doc(tx.email.toLowerCase()).set({ uid: currentUser.uid });
+                            await db.collection("emails").doc(newEmailClean).set({ uid: currentUser.uid });
+
+                            // Clean up old email index entry from /emails/ if email changed
+                            if (oldEmail && oldEmail !== newEmailClean) {
+                                try {
+                                    const oldDoc = await db.collection("emails").doc(oldEmail).get();
+                                    if (oldDoc.exists && oldDoc.data().uid === currentUser.uid) {
+                                        await db.collection("emails").doc(oldEmail).delete();
+                                        console.log("Deleted old email index document:", oldEmail);
+                                    }
+                                } catch(delErr) {
+                                    console.warn("Old email index cleanup notice:", delErr);
+                                }
+                            }
+
                             callAS3("as_onEmailSet", tx.email);
                         }
 
@@ -1139,11 +1166,27 @@
                     firestoreUpdates.email = newEmail;
                     // Keep public routing record in sync using verified username
                     const usernamePayload = { email: newEmail };
-                    if (currentUser.email && currentUser.email.toLowerCase() !== newEmail.toLowerCase()) {
+                    const newEmailClean = newEmail.toLowerCase();
+                    const oldEmail = (userDoc.exists && userDoc.data().email) ? userDoc.data().email.toLowerCase() : (currentUser.email ? currentUser.email.toLowerCase() : "");
+                    if (currentUser.email && currentUser.email.toLowerCase() !== newEmailClean) {
                         usernamePayload.authEmail = currentUser.email.toLowerCase();
                     }
                     await db.collection("usernames").doc(actualUsername.toLowerCase()).set(usernamePayload, { merge: true });
-                    await db.collection("emails").doc(newEmail.toLowerCase()).set({ uid: currentUser.uid });
+                    await db.collection("emails").doc(newEmailClean).set({ uid: currentUser.uid });
+
+                    // Clean up old email index entry from /emails/ if email changed
+                    if (oldEmail && oldEmail !== newEmailClean) {
+                        try {
+                            const oldDoc = await db.collection("emails").doc(oldEmail).get();
+                            if (oldDoc.exists && oldDoc.data().uid === currentUser.uid) {
+                                await db.collection("emails").doc(oldEmail).delete();
+                                console.log("Deleted old email index document:", oldEmail);
+                            }
+                        } catch(delErr) {
+                            console.warn("Old email index cleanup notice:", delErr);
+                        }
+                    }
+
                     callAS3("as_onEmailSet", newEmail);
                 }
 
