@@ -691,97 +691,46 @@
         let tempLoginPass = "";
 
         window.js_login = async function(user, pass) {
-            console.log("JS: Logging in via Firebase Auth...");
+            console.log("JS: Logging in via Cloudflare Worker & Firebase Auth...");
             try {
-                // Phase 1: Lookup email for username.
-                // /usernames/{username} is publicly readable (GET only, listing disabled),
-                // so no anonymous auth token is required here. Anonymous auth was removed
-                // because it was fragile — hangs/failures broke login for all users.
-                const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
+                const workerBase = (typeof NIV_WORKER_URL !== "undefined" && NIV_WORKER_URL)
+                    ? NIV_WORKER_URL.replace(/\?.*$/, "").replace(/\/+$/, "")
+                    : "https://cloudflare-worker.mattproductions16.workers.dev";
 
-                if (usernameDoc.exists && usernameDoc.data().email) {
-                    const email = usernameDoc.data().email;
-                    const authEmail = usernameDoc.data().authEmail;
-                    try {
-                        let userCredential;
-                        try {
-                            userCredential = await firebase.auth().signInWithEmailAndPassword(email, pass);
-                        } catch(primaryAuthErr) {
-                            // If primary email fails (e.g. pending link verification in Auth), try authEmail
-                            if (authEmail && authEmail.toLowerCase() !== email.toLowerCase() && 
-                                (primaryAuthErr.code === "auth/user-not-found" || primaryAuthErr.code === "auth/invalid-credential" || primaryAuthErr.code === "auth/invalid-email")) {
-                                userCredential = await firebase.auth().signInWithEmailAndPassword(authEmail, pass);
-                            } else {
-                                throw primaryAuthErr;
-                            }
-                        }
-                        tempLoginPass = pass;
+                // Step 1: Server-side lookup & authentication via Cloudflare Worker
+                const response = await fetch(workerBase + "/auth/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        username: (user || "").toLowerCase().trim(),
+                        password: pass
+                    })
+                });
 
-                        // If user signed in and Auth email matches new email, clean up authEmail field in /usernames doc
-                        if (userCredential && userCredential.user && userCredential.user.email && userCredential.user.email.toLowerCase() === email.toLowerCase() && authEmail) {
-                            db.collection("usernames").doc(user.toLowerCase()).update({
-                                authEmail: firebase.firestore.FieldValue.delete()
-                            }).catch(() => {});
-                        }
+                const data = await response.json();
+                if (!response.ok || !data.success || !data.customToken) {
+                    callAS3("as_onLoginResult", "error", data.message || "Authentication failed.", 0, "");
+                    return;
+                }
 
-                        // Index email into /emails collection if not already indexed
-                        db.collection("emails").doc(email.toLowerCase()).set({ uid: userCredential.user.uid }).catch(() => {});
+                // Step 2: Sign into Firebase Auth using Custom Token minted server-side by Worker
+                const userCredential = await firebase.auth().signInWithCustomToken(data.customToken);
+                tempLoginPass = pass;
 
-                        // Phase 2: Fetch private profile by UID — with fallback for legacy username documents
-                        let privateDoc = await db.collection("users").doc(userCredential.user.uid).get();
-                        let data = privateDoc.exists ? privateDoc.data() : null;
+                // Step 3: Fetch private profile doc /users/{currentUser.uid}
+                // (Allowed by Firestore rules because request.auth.uid == userId)
+                let privateDoc = await db.collection("users").doc(userCredential.user.uid).get();
+                let userProfile = privateDoc.exists ? privateDoc.data() : null;
 
-                        // Legacy migration check: If the UID doc doesn't exist OR xmlData field
-                        // is explicitly absent (undefined/null), check the old username-keyed doc.
-                        // Use explicit null/undefined check (not falsy) so that xmlData: ""
-                        // (a valid initial value for new accounts) does NOT trigger a legacy lookup.
-                        const xmlDataMissing = !data || data.xmlData === undefined || data.xmlData === null;
-                        if (xmlDataMissing) {
-                            try {
-                                const legacyDoc = await db.collection("users").doc(user.toLowerCase()).get();
-                                if (legacyDoc.exists && legacyDoc.data().xmlData) {
-                                    const legacyXml = legacyDoc.data().xmlData;
-                                    data = data || {};
-                                    data.xmlData = legacyXml;
-                                    if (!data.username) data.username = legacyDoc.data().username || user;
-                                    if (!data.points && legacyDoc.data().points) data.points = legacyDoc.data().points;
-
-                                    // Auto-migrate legacy xmlData to the new UID document
-                                    db.collection("users").doc(userCredential.user.uid).set({
-                                        username: data.username,
-                                        email: email,
-                                        points: Number(data.points) || 0,
-                                        xmlData: legacyXml
-                                    }, { merge: true }).catch(() => {});
-                                }
-                            } catch(legacyErr) {
-                                console.warn("Legacy user doc migration check notice:", legacyErr);
-                            }
-                        }
-
-                        if (data) {
-                            const safeXml = sanitizeCloudXml(data.xmlData || "");
-                            callAS3("as_onLoginResult", "success", data.username || user, Number(data.points) || 0, safeXml, data.email || "");
-                        } else {
-                            callAS3("as_onLoginResult", "error", "Account data not found. Please contact support.", 0, "");
-                        }
-                    } catch(authError) {
-                        console.error("Firebase Auth Error:", authError);
-                        if (authError.code === "auth/wrong-password" || authError.code === "auth/invalid-credential") {
-                            callAS3("as_onLoginResult", "error", "Incorrect password.", 0, "");
-                        } else if (authError.code === "auth/user-not-found") {
-                            callAS3("as_onLoginResult", "error", "User not found. Please create an account.", 0, "");
-                        } else {
-                            callAS3("as_onLoginResult", "error", authError.message || "Authentication failed.", 0, "");
-                        }
-                    }
+                if (userProfile) {
+                    const safeXml = sanitizeCloudXml(userProfile.xmlData || "");
+                    callAS3("as_onLoginResult", "success", userProfile.username || user, Number(userProfile.points) || 0, safeXml, userProfile.email || "");
                 } else {
-                    // No /usernames/ doc and all accounts have been migrated. Show "User not found".
-                    callAS3("as_onLoginResult", "error", "User not found. Please create an account.", 0, "");
+                    callAS3("as_onLoginResult", "error", "Account data not found. Please contact support.", 0, "");
                 }
             } catch(e) {
-                console.error("Firebase Login Database Error:", e);
-                callAS3("as_onLoginResult", "error", "Database connection failed.", 0, "");
+                console.error("Firebase Login Error:", e);
+                callAS3("as_onLoginResult", "error", e.message || "Authentication failed.", 0, "");
             }
         }
 
@@ -803,49 +752,32 @@
                 // (always caught and swallowed). Anonymous auth was removed because it was
                 // fragile and caused silent login failures across all users.
 
+                const workerBase = (typeof NIV_WORKER_URL !== "undefined" && NIV_WORKER_URL)
+                    ? NIV_WORKER_URL.replace(/\?.*$/, "").replace(/\/+$/, "")
+                    : "https://cloudflare-worker.mattproductions16.workers.dev";
+
                 // ── Pre-checks before sending code ───────────────────────────
                 if (context === "register") {
-                    // 1. Check username availability
+                    // 1. Check username availability via Worker server-side check
                     if (cleanUser) {
-                        const usernameDoc = await db.collection("usernames").doc(cleanUser).get();
-                        if (usernameDoc.exists) {
-                            callAS3("as_onCodeSent", "error", "Username already exists.");
-                            return;
+                        try {
+                            const availRes = await fetch(workerBase + "/auth/check-availability", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ username: cleanUser })
+                            });
+                            const availData = await availRes.json();
+                            if (availData && availData.usernameAvailable === false) {
+                                callAS3("as_onCodeSent", "error", "Username already exists.");
+                                return;
+                            }
+                        } catch(availErr) {
+                            console.warn("Availability check notice:", availErr);
                         }
                     }
 
-                    // 2. Check email availability across ALL accounts via /usernames query
+                    // 2. Check Firebase Auth fetchSignInMethodsForEmail
                     if (cleanEmail) {
-                        try {
-                            const emailQuery = await db.collection("usernames").where("email", "==", cleanEmail).get();
-                            if (!emailQuery.empty) {
-                                callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
-                                return;
-                            }
-                            const rawEmail = (email || "").trim();
-                            if (rawEmail !== cleanEmail) {
-                                const rawQuery = await db.collection("usernames").where("email", "==", rawEmail).get();
-                                if (!rawQuery.empty) {
-                                    callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
-                                    return;
-                                }
-                            }
-                        } catch(e) {
-                            console.warn("Usernames email query check error:", e);
-                        }
-
-                        // 3. Check /emails collection
-                        try {
-                            const emailDoc = await db.collection("emails").doc(cleanEmail).get();
-                            if (emailDoc.exists) {
-                                callAS3("as_onCodeSent", "error", "Email is already registered. Please login.");
-                                return;
-                            }
-                        } catch(e) {
-                            console.warn("Emails collection check error:", e);
-                        }
-
-                        // 4. ALSO check Firebase Auth fetchSignInMethodsForEmail
                         try {
                             const methods = await firebase.auth().fetchSignInMethodsForEmail(cleanEmail);
                             if (methods && methods.length > 0) {
@@ -854,38 +786,6 @@
                             }
                         } catch(emailErr) {
                             console.warn("fetchSignInMethodsForEmail check error:", emailErr);
-                        }
-                    }
-                } else if (context === "change_email_pass") {
-                    if (cleanEmail) {
-                        const currentUser = firebase.auth().currentUser;
-                        try {
-                            const emailQuery = await db.collection("usernames").where("email", "==", cleanEmail).get();
-                            if (!emailQuery.empty) {
-                                // Ignore if the document belongs to the user's own username
-                                const userDoc = currentUser ? await db.collection("users").doc(currentUser.uid).get() : null;
-                                const ownUsername = (userDoc && userDoc.exists && userDoc.data().username) ? userDoc.data().username.toLowerCase() : cleanUser;
-                                const isDifferentUser = emailQuery.docs.some(doc => doc.id.toLowerCase() !== ownUsername);
-                                if (isDifferentUser) {
-                                    callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
-                                    return;
-                                }
-                            }
-                        } catch(e) {
-                            console.warn("Usernames email query check error:", e);
-                        }
-
-                        try {
-                            const emailDoc = await db.collection("emails").doc(cleanEmail).get();
-                            if (emailDoc.exists) {
-                                // Allow if the email doc belongs to current user's own UID
-                                if (!currentUser || emailDoc.data().uid !== currentUser.uid) {
-                                    callAS3("as_onCodeSent", "error", "Email is already registered to another account.");
-                                    return;
-                                }
-                            }
-                        } catch(e) {
-                            console.warn("Emails collection check error:", e);
                         }
                     }
                 }
@@ -1216,14 +1116,7 @@
                     return;
                 }
 
-                // ── Check 1: Verify username availability ──────────────────────────
-                const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
-                if (usernameDoc.exists) {
-                    callAS3("as_onLoginResult", "error", "Username already exists.", 0, "");
-                    return;
-                }
-
-                // ── Check 2: Stage registration via verification flow ──────────────
+                // Stage registration via verification flow (pre-checks happen server-side inside js_sendVerificationCode)
                 await js_sendVerificationCode(email, user, "register", pass);
             } catch(e) {
                 console.error("Firebase Register Error:", e);
@@ -1232,22 +1125,27 @@
         }
 
         window.js_forgotPassword = async function(user) {
-            console.log("JS: Forgot Password recovery initiated for user:", user);
+            console.log("JS: Forgot Password recovery initiated via Worker for user:", user);
             try {
-                // No anonymous auth needed: /usernames/{username} GET is publicly readable.
+                const workerBase = (typeof NIV_WORKER_URL !== "undefined" && NIV_WORKER_URL)
+                    ? NIV_WORKER_URL.replace(/\?.*$/, "").replace(/\/+$/, "")
+                    : "https://cloudflare-worker.mattproductions16.workers.dev";
 
-                // Look up email from the public /usernames/ routing collection
-                const usernameDoc = await db.collection("usernames").doc(user.toLowerCase()).get();
-                if (usernameDoc.exists && usernameDoc.data().email) {
-                    await firebase.auth().sendPasswordResetEmail(usernameDoc.data().email);
-                    callAS3("as_onForgotPasswordResult", "success", "Recovery email successfully sent!");
+                const response = await fetch(workerBase + "/auth/forgot-password", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username: (user || "").toLowerCase().trim() })
+                });
+
+                const data = await response.json();
+                if (response.ok && data.success) {
+                    callAS3("as_onForgotPasswordResult", "success", data.message || "Recovery email successfully sent!");
                 } else {
-                    // No routing record — legacy account, prompt for email
-                    callAS3("as_onForgotPasswordResult", "need_email", user);
+                    callAS3("as_onForgotPasswordResult", "error", data.message || "Connection failed. Please try again.");
                 }
             } catch(e) {
                 console.error("Firebase Forgot Password Error:", e);
-                callAS3("as_onForgotPasswordResult", "error", e.message || "Connection failed. Please try again.");
+                callAS3("as_onForgotPasswordResult", "error", "Connection failed. Please try again.");
             }
         }
 
@@ -1262,20 +1160,24 @@
                     return;
                 }
 
-                // ── Guard: Ensure username is not already claimed by an existing account ──
-                // /usernames/ and /emails/ GET are publicly readable — no anonymous auth needed.
+                // Check username availability server-side via Cloudflare Worker
+                const workerBase = (typeof NIV_WORKER_URL !== "undefined" && NIV_WORKER_URL)
+                    ? NIV_WORKER_URL.replace(/\?.*$/, "").replace(/\/+$/, "")
+                    : "https://cloudflare-worker.mattproductions16.workers.dev";
 
-                const usernameDoc = await db.collection("usernames").doc(cleanUser).get();
-                if (usernameDoc.exists) {
-                    callAS3("as_onForgotPasswordResult", "error", "Username is already registered. Please use password recovery or login.");
-                    return;
-                }
-
-                // Guard: Ensure email is not already in use
-                const emailDoc = await db.collection("emails").doc(cleanEmail).get();
-                if (emailDoc.exists) {
-                    callAS3("as_onForgotPasswordResult", "error", "Email is already registered to another account.");
-                    return;
+                try {
+                    const availRes = await fetch(workerBase + "/auth/check-availability", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ username: cleanUser })
+                    });
+                    const availData = await availRes.json();
+                    if (availData && availData.usernameAvailable === false) {
+                        callAS3("as_onForgotPasswordResult", "error", "Username is already registered. Please use password recovery or login.");
+                        return;
+                    }
+                } catch(availErr) {
+                    console.warn("Availability check notice:", availErr);
                 }
 
                 // Create an Auth account for this legacy user
