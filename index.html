@@ -793,9 +793,6 @@
                 // ── Server-Side Code Generation & Token Signing via Cloudflare Worker ──
                 // The raw code is generated server-side and emailed directly to the user.
                 // The browser receives an HMAC-signed token. Raw code is NEVER in client memory.
-                const workerBase = (typeof NIV_WORKER_URL !== "undefined" && NIV_WORKER_URL)
-                    ? NIV_WORKER_URL.replace(/\?.*$/, "").replace(/\/+$/, "")
-                    : "https://cloudflare-worker.mattproductions16.workers.dev";
 
                 const response = await fetch(workerBase + "/send-verification", {
                     method: "POST",
